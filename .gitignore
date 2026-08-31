@@ -1,0 +1,25 @@
+# Dependencies and Next.js output.
+node_modules/
+.next/
+coverage/
+
+# Server-side credentials and encrypted runtime state.
+.env
+.env.*
+!.env.example
+.data/
+
+# Logs and local tool output.
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+*.tsbuildinfo
+
+# Operating-system metadata.
+.DS_Store
+Thumbs.db
+
+# Read-only upstream audit and temporary tools.
+.upstream-stream-manager/
+.tools/
