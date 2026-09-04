@@ -68,6 +68,8 @@ export interface LiveServiceOptions {
   now?: () => Date
   /** Test seam for mutation serialization; production uses the filesystem lease. */
   lock?: <T>(operation: string, action: () => Promise<T>) => Promise<T>
+  /** Isolates persisted lifecycle risk by local Channel when used in multi-channel orchestration. */
+  safetyScope?: string
 }
 
 interface Inventory {
@@ -79,13 +81,15 @@ interface Inventory {
 /** Coordinates safe single-account Broadcast selection, binding, and transitions. */
 export class LiveService {
   private readonly api: LiveServiceApi
-  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock'>>
+  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock' | 'safetyScope'>>
   /** Wait implementation used by bounded lifecycle polling and retries. */
   private readonly sleepFn: (milliseconds: number) => Promise<void>
   /** Server clock used only when constructing a new test Broadcast schedule. */
   private readonly now: () => Date
   /** Cross-request serializer guarding all state-changing operations. */
   private readonly lock: <T>(operation: string, action: () => Promise<T>) => Promise<T>
+  /** Optional local Channel scope for persisted YouTube lifecycle risk. */
+  private readonly safetyScope: string | undefined
 
   /**
    * Creates a lifecycle service around the server-only YouTube adapter.
@@ -112,6 +116,7 @@ export class LiveService {
       () => new Date()
     )
     this.lock = options.lock ?? withOperationLock
+    this.safetyScope = options.safetyScope
   }
 
   /**
@@ -218,7 +223,7 @@ export class LiveService {
           throw new LivePilotError('INVALID_STATE', '此 Broadcast 已完成，不能再次开始。', { retryable: false })
         }
 
-        await markBroadcastRisk(broadcastId, inventory.channel.id)
+        await this.markRisk(broadcastId, inventory.channel.id)
         if (current === 'liveStarting') {
           current = await this.waitForLifeCycle(broadcastId, ['live'])
           if (current !== 'live') throw new LivePilotError('LIVE_TRANSITION_FAILED', 'YouTube 未确认 liveStarting 进入 live。')
@@ -259,7 +264,7 @@ export class LiveService {
       async () => {
         const current = await this.api.getBroadcastLifeCycleStatus(broadcastId)
         if (current === 'complete') {
-          await clearBroadcastRisk(broadcastId)
+          await this.clearRisk(broadcastId)
           return this.snapshot(broadcastId)
         }
         if (!current) throw new LivePilotError('NO_BROADCAST', 'YouTube 找不到当前 Broadcast。')
@@ -271,7 +276,7 @@ export class LiveService {
           )
         }
         await this.transitionAndConfirmComplete(broadcastId)
-        await clearBroadcastRisk(broadcastId)
+        await this.clearRisk(broadcastId)
         return this.snapshot(broadcastId)
       },
     )
@@ -287,7 +292,7 @@ export class LiveService {
       /* Reconcile remote inventory and the persisted risk marker atomically. */
       async () => {
         const inventory = await this.inventory()
-        const risk = await readSafetyState()
+        const risk = await this.readRisk()
         if (inventory.activeIds.length > 0 || risk) {
           throw new LivePilotError(
             'INVALID_STATE',
@@ -319,7 +324,7 @@ export class LiveService {
         /* Persist and compare only YouTube Broadcast IDs, not the mutable resource body. */
         (item) => item.id,
       )
-    const existingRisk = await readSafetyState()
+    const existingRisk = await this.readRisk()
     if (existingRisk && existingRisk.guardedChannelId !== channel.id) {
       throw new LivePilotError(
         'INVALID_STATE',
@@ -328,16 +333,36 @@ export class LiveService {
       )
     }
     if (activeIds.length > 0) {
-      await reconcileBroadcastRisk(channel.id, activeIds)
+      await this.reconcileRisk(channel.id, activeIds)
     } else if (existingRisk) {
       const exact = await this.api.getBroadcastLifeCycleStatus(existingRisk.riskBroadcastId)
       if (exact && ACTIVE_LIFE_CYCLES.has(exact)) {
         activeIds.push(existingRisk.riskBroadcastId)
       } else if (exact) {
-        await clearBroadcastRisk(existingRisk.riskBroadcastId)
+        await this.clearRisk(existingRisk.riskBroadcastId)
       }
     }
     return { channel, broadcasts, activeIds }
+  }
+
+  /** Reads the risk marker from either the legacy singleton or this Channel's scoped file. */
+  private readRisk() {
+    return this.safetyScope ? readSafetyState(this.safetyScope) : readSafetyState()
+  }
+
+  /** Persists one unconfirmed lifecycle risk without allowing Channels to share a marker. */
+  private markRisk(broadcastId: string, channelId: string): Promise<void> {
+    return this.safetyScope ? markBroadcastRisk(broadcastId, channelId, this.safetyScope) : markBroadcastRisk(broadcastId, channelId)
+  }
+
+  /** Clears only the matching risk marker in the service's selected persistence scope. */
+  private clearRisk(broadcastId?: string): Promise<void> {
+    return this.safetyScope ? clearBroadcastRisk(broadcastId, this.safetyScope) : clearBroadcastRisk(broadcastId)
+  }
+
+  /** Reconciles active IDs into the same scope that the current Channel uses for transitions. */
+  private reconcileRisk(channelId: string, activeIds: string[]): Promise<void> {
+    return this.safetyScope ? reconcileBroadcastRisk(channelId, activeIds, this.safetyScope) : reconcileBroadcastRisk(channelId, activeIds)
   }
 
   /**

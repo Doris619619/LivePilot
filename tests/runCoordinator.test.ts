@@ -16,10 +16,12 @@ let directory = ''; let previous: Record<string, string | undefined> = {}
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value }
 /** Returns an API adapter that has no network and defaults to a confirmed live lifecycle. */
 function api(overrides: Partial<LiveServiceApi> = {}): LiveServiceApi {
+  const broadcast = { id: 'broadcast-1', snippet: { title: 'Test', description: '' }, status: { lifeCycleStatus: 'ready', privacyStatus: 'unlisted' } as const }
+  const stream = { streamId: 'stream-1', title: 'Stream', streamName: 'private', ingestionAddress: 'private' }
   return {
-    getCurrentChannel: async () => ({ id: 'youtube-channel', title: 'Channel' }), listLiveBroadcasts: async () => [], getBroadcastById: async () => null,
-    createBroadcast: async () => ({ id: 'broadcast-1', snippet: { title: 'Test', description: '' }, status: { lifeCycleStatus: 'ready', privacyStatus: 'unlisted' } }),
-    getOrCreateLiveStream: async () => ({ streamId: 'stream-1', title: 'Stream', streamName: 'private', ingestionAddress: 'private' }), getLiveStreamById: async () => null,
+    getCurrentChannel: async () => ({ id: 'youtube-channel', title: 'Channel' }), listLiveBroadcasts: async () => [broadcast], getBroadcastById: async () => broadcast,
+    createBroadcast: async () => broadcast,
+    getOrCreateLiveStream: async () => stream, getLiveStreamById: async () => stream,
     bindBroadcast: async () => undefined, getBroadcastContentDetails: async () => ({ enableMonitorStream: false, boundStreamId: 'stream-1' }), getBroadcastLifeCycleStatus: async () => 'live',
     getStreamStatus: async () => ({ streamId: 'stream-1', title: 'Stream', streamStatus: 'active', healthStatus: 'good', configurationIssues: [] }), transitionBroadcast: async () => undefined,
     ...overrides,

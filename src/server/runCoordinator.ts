@@ -10,7 +10,7 @@ import { LivePilotError, toPublicError } from './errors'
 import { withNamedOperationLock } from './operationLock'
 import { ObsControlClient, type ObsEndpoint } from './obsControlClient'
 import { createChannelYouTubeApi } from './channelYoutubeApi'
-import type { LiveServiceApi } from './liveService'
+import { LiveService, type LiveServiceApi } from './liveService'
 import { createRun, listRecords, observeObs, requireChannel, requireObsForChannel, requireRun, setReusableStream, updateRun } from './controlPlaneStore'
 
 const POLL_MS = 2_000
@@ -90,13 +90,10 @@ export class RunCoordinator {
         let ingest = null
         for (let attempt = 0; attempt < this.pollAttempts; attempt += 1) { ingest = await api.getStreamStatus(stream.streamId); await updateRun(run.id, { ingestStatus: ingest.streamStatus }); if (ingest.streamStatus === 'active') break; if (attempt + 1 < this.pollAttempts) await this.sleepFn(POLL_MS) }
         if (ingest?.streamStatus !== 'active') throw new LivePilotError('INGEST_TIMEOUT', 'OBS 已启动，但 YouTube ingest 未在限定时间内 active。')
-        await updateRun(run.id, { phase: 'transitioning_live' }); const details = await api.getBroadcastContentDetails(broadcast.id)
-        if (details?.enableMonitorStream === true) await api.transitionBroadcast(broadcast.id, 'testing')
-        await api.transitionBroadcast(broadcast.id, 'live')
-        let lifecycle: string | null = null
-        for (let attempt = 0; attempt < this.pollAttempts; attempt += 1) { lifecycle = await api.getBroadcastLifeCycleStatus(broadcast.id); if (lifecycle === 'live') break; if (attempt + 1 < this.pollAttempts) await this.sleepFn(POLL_MS) }
-        if (lifecycle !== 'live') throw new LivePilotError('LIVE_TRANSITION_FAILED', 'YouTube 未确认 Broadcast 已进入 live。')
-        await updateRun(run.id, { phase: 'live', youtubeLifecycle: lifecycle })
+        await updateRun(run.id, { phase: 'transitioning_live' })
+        const lifecycle = new LiveService(api, { lock: async (_operation, action) => action(), safetyScope: channel.id, sleep: this.sleepFn, confirmationPollMs: POLL_MS, confirmationMaxAttempts: this.pollAttempts, transitionRetryMs: POLL_MS, transitionMaxAttempts: this.pollAttempts })
+        await lifecycle.startBroadcast(broadcast.id)
+        await updateRun(run.id, { phase: 'live', youtubeLifecycle: 'live' })
       } catch (error) { await updateRun(run.id, { phase: obsStarted ? 'recovery_required' : 'failed', obsState: obsStarted ? 'recovery_required' : 'unknown', error: toPublicError(error) }); if (obsStarted) await observeObs(obs.id, 'recovery_required'); throw error }
     })
   }
