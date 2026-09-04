@@ -54,6 +54,7 @@ export class RunCoordinator {
       const service = new LiveService(api, {
         lock: async (_operation, action) => action(),
         safety: createRunSafetyState(channel.id, run.id),
+        preferredStreamId: channel.reusableStreamId,
       })
       try {
         const prepared = await service.createTestBroadcast()

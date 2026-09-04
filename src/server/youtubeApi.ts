@@ -347,8 +347,8 @@ export async function createLiveStream(connectionId?: string): Promise<LiveStrea
 }
 
 /**
- * Selects the dedicated, default, or sole existing Stream, creating one only when none
- * exist. Ambiguous multi-Stream inventories fail closed so the server never guesses a key.
+ * Selects an explicit dedicated/default/sole Stream. When an existing inventory is
+ * ambiguous, creates a new LivePilot-owned reusable Stream instead of guessing a key.
  */
 export async function getOrCreateLiveStream(connectionId?: string): Promise<LiveStreamSecret> {
   const items = await listLiveStreams(connectionId)
@@ -361,14 +361,7 @@ export async function getOrCreateLiveStream(connectionId?: string): Promise<Live
       (item) => item.snippet?.isDefaultStream === true,
     )
     ?? (items.length === 1 ? items[0] : undefined)
-  if (!selected && items.length === 0) return createLiveStream(connectionId)
-  if (!selected) {
-    throw new LivePilotError(
-      'NO_STREAM',
-      '频道存在多个 Stream，但没有 LivePilot 专用或可明确识别的默认 Stream；服务端不会猜测 Stream Key。',
-      { retryable: false },
-    )
-  }
+  if (!selected) return createLiveStream(connectionId)
   const secret = toSecret(selected)
   if (!secret) throw new LivePilotError('NO_STREAM', '目标 Stream 缺少 ingest 配置。')
   return secret

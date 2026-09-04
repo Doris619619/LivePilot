@@ -196,6 +196,31 @@ describe('LiveService', () => {
     expect(JSON.stringify(snapshot)).not.toContain(STREAM.streamName)
   })
 
+  /** Uses the Channel's persisted reusable Stream ID when preparing an unbound Broadcast. */
+  it('uses the exact persisted Channel stream before generic Stream discovery', async () => {
+    let bound = false
+    const getById = vi.fn(async () => STREAM)
+    const discover = vi.fn(async () => STREAM)
+    const api = makeApi({
+      getLiveStreamById: getById,
+      getOrCreateLiveStream: discover,
+      bindBroadcast: vi.fn(async () => { bound = true }),
+      getBroadcastContentDetails: vi.fn(async () => ({
+        enableMonitorStream: false, enableAutoStart: false,
+        boundStreamId: bound ? STREAM.streamId : undefined,
+      })),
+    })
+    const subject = new LiveService(api, {
+      lock: async (_operation, action) => action(),
+      preferredStreamId: STREAM.streamId,
+    })
+
+    await subject.prepareBroadcast('broadcast-1')
+
+    expect(getById).toHaveBeenCalledWith(STREAM.streamId)
+    expect(discover).not.toHaveBeenCalled()
+  })
+
   /** 验证其他活动 Broadcast 会阻止新建和切换，避免控制错误直播。 */
   it('blocks create and switching when another broadcast is active', async () => {
     const create = vi.fn(async () => broadcast('new-one'))

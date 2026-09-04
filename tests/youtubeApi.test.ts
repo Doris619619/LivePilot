@@ -24,6 +24,7 @@ vi.mock('@/server/quotaState', () => ({
 
 import {
   createLiveStream,
+  getOrCreateLiveStream,
   listLiveBroadcasts,
   transitionBroadcast,
 } from '@/server/youtubeApi'
@@ -126,6 +127,27 @@ describe('youtubeApi', () => {
     })
     expect(JSON.stringify(body)).not.toContain('server-only-stream-key')
     expect(String(request[0])).toContain('/liveStreams?')
+  })
+
+  /** Never guesses between user-managed streams: create one exact LivePilot-owned Stream instead. */
+  it('creates a dedicated reusable stream when existing Stream inventory is ambiguous', async () => {
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (init?.method === 'GET' && url.pathname.endsWith('/liveStreams')) {
+        return jsonResponse({ items: [
+          { id: 'manual-a', snippet: { title: 'Manual A' } },
+          { id: 'manual-b', snippet: { title: 'Manual B' } },
+        ] })
+      }
+      if (init?.method === 'POST' && url.pathname.endsWith('/liveStreams')) {
+        return jsonResponse({ id: 'livepilot-new', snippet: { title: 'LivePilot reusable stream' }, cdn: { ingestionInfo: { streamName: 'server-only-new-key' } } })
+      }
+      throw new Error('Unexpected YouTube request: ' + url)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getOrCreateLiveStream()).resolves.toMatchObject({ streamId: 'livepilot-new', streamName: 'server-only-new-key' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   /** 验证 Google quotaExceeded reason 会打开本地 quota gate 并保留行动化错误代码。 */

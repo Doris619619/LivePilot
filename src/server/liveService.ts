@@ -75,6 +75,8 @@ export interface LiveServiceOptions {
     clear: (broadcastId?: string) => Promise<void>
     reconcile: (channelId: string, activeBroadcastIds: string[]) => Promise<void>
   }
+  /** Exact Channel-owned reusable Stream reference, never a browser-provided value. */
+  preferredStreamId?: string | null
 }
 
 interface Inventory {
@@ -86,7 +88,7 @@ interface Inventory {
 /** Coordinates safe single-account Broadcast selection, binding, and transitions. */
 export class LiveService {
   private readonly api: LiveServiceApi
-  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock' | 'safety'>>
+  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock' | 'safety' | 'preferredStreamId'>>
   /** Wait implementation used by bounded lifecycle polling and retries. */
   private readonly sleepFn: (milliseconds: number) => Promise<void>
   /** Server clock used only when constructing a new test Broadcast schedule. */
@@ -95,6 +97,8 @@ export class LiveService {
   private readonly lock: <T>(operation: string, action: () => Promise<T>) => Promise<T>
   /** Persists uncertain lifecycle state inside the owning Channel/Run scope. */
   private readonly safety: Required<NonNullable<LiveServiceOptions['safety']>>
+  /** Keeps repeated Runs on the exact durable Channel Stream when it is still valid. */
+  private readonly preferredStreamId: string | null
 
   /**
    * Creates a lifecycle service around the server-only YouTube adapter.
@@ -127,6 +131,7 @@ export class LiveService {
       clear: clearBroadcastRisk,
       reconcile: reconcileBroadcastRisk,
     }
+    this.preferredStreamId = options.preferredStreamId ?? null
   }
 
   /**
@@ -379,7 +384,9 @@ export class LiveService {
     }
     const stream = details.boundStreamId
       ? await this.api.getLiveStreamById(details.boundStreamId)
-      : await this.api.getOrCreateLiveStream()
+      : this.preferredStreamId
+        ? await this.api.getLiveStreamById(this.preferredStreamId)
+        : await this.api.getOrCreateLiveStream()
     if (!stream) throw new LivePilotError('NO_STREAM', '已绑定的 YouTube Stream 不存在。')
     if (!details.boundStreamId) {
       if (ACTIVE_LIFE_CYCLES.has(lifeCycle)) {

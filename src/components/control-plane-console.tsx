@@ -106,6 +106,7 @@ export function ControlPlaneConsole() {
   return (
     <main className="app-shell">
       <header className="topbar"><div className="brand"><div><h1>LivePilot</h1><p>Channel · Job · Run · FFmpeg</p></div></div><button className="button ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>刷新</button></header>
+      {error && <section className="notice error-notice" role="alert"><div className="error-code">{error.code}</div><div><strong>{error.message}</strong><p>{error.action}</p></div></section>}
       {!snapshot.configured && <section className="notice warning"><strong>需要配置 Google OAuth 与 LIVEPILOT_APP_SECRET。</strong></section>}
       <section className="panel">
         <div className="panel-heading"><div><p className="eyebrow">OAUTH CONNECTIONS</p><h3>YouTube 频道</h3></div><button className="button primary" disabled={!snapshot.configured || Boolean(busy)} onClick={() => void connect()}>{busy === 'connect' ? '正在前往 Google…' : '添加 Google / YouTube 账号'}</button></div>
@@ -129,7 +130,6 @@ export function ControlPlaneConsole() {
         </section>
       </section>
       <section className="panel"><div className="panel-heading"><div><p className="eyebrow">RUNTIME</p><h3>Worker / YouTube 状态</h3></div></div>{snapshot.runs.length === 0 ? <p className="field-help">尚无运行记录。</p> : <ul>{snapshot.runs.map((run) => <li key={run.id}><strong>{run.phase}</strong> · worker {run.workerPhase} · ingest {run.ingestStatus ?? 'unknown'} · YouTube {run.youtubeLifecycle ?? 'unknown'} · {run.progress.fps ?? '—'} fps · {run.progress.speed ?? '—'} · exit {run.exitCode ?? '—'}{run.error ? ` · ${run.error.code}: ${run.error.message}` : ''}</li>)}</ul>}</section>
-      {error && <section className="notice error-notice" role="alert"><div className="error-code">{error.code}</div><div><strong>{error.message}</strong><p>{error.action}</p></div></section>}
     </main>
   )
 }
