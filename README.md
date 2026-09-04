@@ -83,6 +83,8 @@ YouTube 首次启用直播可能存在平台等待期。应用无法替代 Googl
    # LIVEPILOT_FFMPEG_VIDEO_ENCODER=h264_qsv
    # 可选：仅让 FFmpeg 的 RTMPS 连接经由本机 HTTP CONNECT 代理（例如 Clash mixed-port）
    # LIVEPILOT_FFMPEG_HTTP_PROXY=http://127.0.0.1:7890
+   # 可选：优先经由本机 SOCKS5；LivePilot 为每个 Worker 创建临时 loopback HTTP CONNECT bridge
+   # LIVEPILOT_FFMPEG_SOCKS5_PROXY=socks5://127.0.0.1:7890
    ~~~
 
 可用 PowerShell 生成本地应用密钥；只把输出写进 `.env.local`：

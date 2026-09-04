@@ -25,3 +25,9 @@ FFmpeg 使用 `-progress pipe:3`。只有输出时间单调前进才算 `pushing
 ## 媒体安全
 
 `LIVEPILOT_MEDIA_ROOTS` 由管理员在服务端配置。浏览器只提交媒体 ID；服务端在创建 Job 和启动 Run 时重新扫描、realpath 校验根目录包含关系。第一阶段 playlist 仅接受由服务端 FFmpeg 预检且采样率/声道一致的 MP3。
+
+## Windows RTMPS 出站
+
+Worker 可以使用受信任的 `LIVEPILOT_FFMPEG_HTTP_PROXY` 指向 loopback HTTP CONNECT 代理。若 Windows 环境已验证 SOCKS5（例如 Clash mixed-port），优先配置 `LIVEPILOT_FFMPEG_SOCKS5_PROXY`：每条 Run 在 `127.0.0.1` 的随机端口创建临时 HTTP CONNECT → SOCKS5 bridge，FFmpeg 只连接该短生命周期 listener，bridge 随 worker 退出关闭。
+
+代理地址必须是无凭据的 loopback 地址；浏览器不能配置代理或获取 Stream Key。该 bridge 不替代或修改 Proxifier、Clash、TUN、系统代理及其规则。

@@ -11,6 +11,7 @@ import { isAbsolute } from 'node:path'
 import { createRequire } from 'node:module'
 import { dataPath, deletePrivateFile, writePrivateFile } from './storage'
 import { LivePilotError } from './errors'
+import { FfmpegSocks5Bridge, resolveFfmpegSocks5Proxy } from './socks5Bridge'
 
 export interface WorkerProgress {
   frame: number | null
@@ -191,6 +192,7 @@ function numeric(value: string | undefined): number | null {
 export class FfmpegWorker {
   private readonly child: ChildProcess
   private readonly playlistPath: string | null
+  private readonly socksBridge: FfmpegSocks5Bridge | null
   private readonly events: WorkerEvents
   private readonly secrets: string[]
   private stderr = ''
@@ -200,9 +202,10 @@ export class FfmpegWorker {
   private exited = false
   private expectedStop = false
 
-  private constructor(child: ChildProcess, playlistPath: string | null, events: WorkerEvents, secrets: string[]) {
+  private constructor(child: ChildProcess, playlistPath: string | null, socksBridge: FfmpegSocks5Bridge | null, events: WorkerEvents, secrets: string[]) {
     this.child = child
     this.playlistPath = playlistPath
+    this.socksBridge = socksBridge
     this.events = events
     this.secrets = secrets
     this.observe()
@@ -211,26 +214,30 @@ export class FfmpegWorker {
   /** Starts a real-time looping FFmpeg process and returns an opaque worker controller. */
   static async start(input: StartWorkerInput, events: WorkerEvents): Promise<FfmpegWorker> {
     const binary = await resolveFfmpegPath()
-    const httpProxy = resolveFfmpegHttpProxy()
     const videoEncoder = resolveFfmpegVideoEncoder()
     const playlist = await writePlaylist(input.runId, input.audioPaths)
+    let socksBridge: FfmpegSocks5Bridge | null = null
     const audioInput = playlist ? ['-stream_loop', '-1', '-re', '-f', 'concat', '-safe', '0', '-i', playlist] : ['-stream_loop', '-1', '-re', '-i', input.audioPaths[0]]
     const target = input.ingestionAddress.replace(/\/$/, '') + '/' + input.streamName
-    const args = [
-      '-hide_banner', '-nostats', '-loglevel', 'warning', '-progress', 'pipe:3',
-      '-stream_loop', '-1', '-re', '-i', input.videoPath,
-      ...audioInput,
-      '-map', '0:v:0', '-map', '1:a:0', '-map_metadata', '-1',
-      ...buildYouTubeVideoArgs(videoEncoder),
-      '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
-      ...(httpProxy ? ['-http_proxy', httpProxy] : []),
-      '-f', 'flv', target,
-    ]
     try {
+      const socks5 = resolveFfmpegSocks5Proxy()
+      socksBridge = socks5 ? await FfmpegSocks5Bridge.start(socks5) : null
+      const httpProxy = socksBridge?.httpProxyUrl ?? resolveFfmpegHttpProxy()
+      const args = [
+        '-hide_banner', '-nostats', '-loglevel', 'warning', '-progress', 'pipe:3',
+        '-stream_loop', '-1', '-re', '-i', input.videoPath,
+        ...audioInput,
+        '-map', '0:v:0', '-map', '1:a:0', '-map_metadata', '-1',
+        ...buildYouTubeVideoArgs(videoEncoder),
+        '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
+        ...(httpProxy ? ['-http_proxy', httpProxy] : []),
+        '-f', 'flv', target,
+      ]
       const child = spawn(binary, args, { shell: false, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe', 'pipe'] })
-      return new FfmpegWorker(child, playlist, events, [input.streamName, input.ingestionAddress, target])
+      return new FfmpegWorker(child, playlist, socksBridge, events, [input.streamName, input.ingestionAddress, target])
     } catch (error) {
       if (playlist) await deletePrivateFile(playlist)
+      await socksBridge?.close().catch(() => undefined)
       throw new LivePilotError('WORKER_START_FAILED', 'FFmpeg 无法启动。', { cause: error })
     }
   }
@@ -289,6 +296,7 @@ export class FfmpegWorker {
       this.exited = true
       for (const progress of progressDecoder.finish()) this.acceptProgress(progress)
       void deletePlaylist(this.playlistPath)
+      void this.socksBridge?.close()
       if (!this.expectedStop && (this.progress.outTimeMs ?? 0) === 0) {
         this.pushingReject?.(new LivePilotError('WORKER_CRASHED', 'FFmpeg 在开始推流前退出。'))
       }
