@@ -25,6 +25,13 @@ const DEFAULT_ACTIONS: Record<PublicErrorCode, string> = {
   QUOTA_EXCEEDED: '若正在直播，请立即在 YouTube Studio 手工结束；再等待太平洋时间午夜重置或申请配额。',
   NETWORK_ERROR: '检查服务端网络、代理和 Google API 可访问性后重试。',
   BUSY: '等待当前 YouTube 写操作结束后再试。',
+  RUN_ALREADY_ACTIVE: '该 Channel 已有未确认结束的 Live Run；先刷新并恢复到 OBS inactive。',
+  OBS_UNREACHABLE: '确认对应 Portable OBS 正在运行、WebSocket 仅监听 127.0.0.1 且端口和密码正确。',
+  OBS_ALREADY_STREAMING: 'OBS 已在推流；先显式恢复或结束对应 Run，LivePilot 不会接管未知推流。',
+  OBS_START_FAILED: 'OBS 未确认开始推流；检查该实例的 Profile、Scene、Stream Key 与 WebSocket 设置。',
+  OBS_STOP_FAILED: 'OBS 未确认停止；不要开始新的 Run，先在 OBS 中停止并刷新恢复状态。',
+  OBS_RECOVERY_REQUIRED: '刷新 OBS 状态并确认其已 inactive 后，才能在此 Channel 开始新的 Run。',
+  INGEST_TIMEOUT: 'OBS 已开始推流但 YouTube 未确认 ingest active；检查该 OBS 的 Stream Key 和网络。',
   INVALID_STATE: '刷新远端状态，并按当前可用操作重试。',
   UNKNOWN: '刷新页面后重试；如持续失败，请记录错误代码与操作步骤。',
 }

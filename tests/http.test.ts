@@ -43,7 +43,7 @@ interface RequestOverrides {
 
 /** 构造与真实控制端点等价的 NextRequest，并允许单项破坏安全前提。 */
 function mutationRequest(overrides: RequestOverrides = {}): NextRequest {
-  return new NextRequest('http://127.0.0.1:3000/api/live/start', {
+  return new NextRequest('http://127.0.0.1:3000/api/runs/start', {
     method: 'POST',
     headers: {
       Host: overrides.host ?? '127.0.0.1:3000',

@@ -21,6 +21,13 @@ export type PublicErrorCode =
   | 'QUOTA_EXCEEDED'
   | 'NETWORK_ERROR'
   | 'BUSY'
+  | 'RUN_ALREADY_ACTIVE'
+  | 'OBS_UNREACHABLE'
+  | 'OBS_ALREADY_STREAMING'
+  | 'OBS_START_FAILED'
+  | 'OBS_STOP_FAILED'
+  | 'OBS_RECOVERY_REQUIRED'
+  | 'INGEST_TIMEOUT'
   | 'INVALID_STATE'
   | 'UNKNOWN'
 
@@ -95,3 +102,61 @@ export interface DashboardPayload {
   snapshot: AppSnapshot
   csrfToken: string
 }
+
+/** Browser-safe OAuth connection metadata; token material is never serialized. */
+export interface ConnectionSummary { id: string; label: string; connected: boolean }
+
+/** Browser-safe YouTube Channel and its server-owned reusable Stream reference. */
+export interface ChannelSummary {
+  id: string
+  connectionId: string
+  youtubeChannelId: string
+  title: string
+  reusableStreamId: string | null
+}
+
+/** A registered local Portable OBS endpoint. Its password is intentionally absent. */
+export interface ObsInstanceSummary {
+  id: string
+  channelId: string
+  label: string
+  host: '127.0.0.1'
+  port: number
+  lastState: ObsState
+  lastSeenAt: string | null
+}
+
+/** Observable OBS streaming state, deliberately separate from YouTube lifecycle. */
+export type ObsState = 'unknown' | 'inactive' | 'active' | 'disconnected' | 'recovery_required'
+export type RunPhase = 'preparing' | 'waiting_for_ingest' | 'transitioning_live' | 'live' | 'stopping' | 'completed' | 'failed' | 'stop_failed' | 'recovery_required'
+
+/** A channel-scoped execution record without PID, process output, or media settings. */
+export interface LiveRunSummary {
+  id: string
+  channelId: string
+  obsInstanceId: string
+  phase: RunPhase
+  broadcastId: string | null
+  streamId: string | null
+  youtubeLifecycle: string | null
+  ingestStatus: string | null
+  obsState: ObsState
+  obsLastSeenAt: string | null
+  obsError: PublicError | null
+  error: PublicError | null
+  startedAt: string
+  endedAt: string | null
+}
+
+/** The browser-safe multi-channel control surface. */
+export interface ControlPlaneSnapshot {
+  configured: boolean
+  connections: ConnectionSummary[]
+  channels: ChannelSummary[]
+  obsInstances: ObsInstanceSummary[]
+  runs: LiveRunSummary[]
+  error: PublicError | null
+}
+
+/** Standard payload returned by the Channel-scoped console APIs. */
+export interface ControlPlanePayload { snapshot: ControlPlaneSnapshot; csrfToken: string }

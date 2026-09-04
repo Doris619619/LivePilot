@@ -132,6 +132,14 @@ export function readBroadcastId(value: unknown): string {
   return value
 }
 
+/** Validates a server-issued opaque identifier before a private catalog lookup. */
+export function readOpaqueId(value: unknown, label = '资源'): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{12,128}$/.test(value)) {
+    throw new LivePilotError('INVALID_STATE', label + ' ID 格式无效。', { retryable: false })
+  }
+  return value
+}
+
 /**
  * Parses an untrusted request body and requires a non-array JSON object.
  * Parse details are wrapped so malformed input cannot leak internal exceptions.
