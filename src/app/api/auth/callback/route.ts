@@ -11,6 +11,7 @@ import {
   exchangeAuthorizationCode,
   saveTokens,
 } from '@/server/youtubeAuth'
+import { upsertAuthorizedChannel } from '@/server/controlPlaneStore'
 import {
   FLOW_COOKIE,
   OAUTH_COOKIE,
@@ -44,7 +45,8 @@ export async function GET(request: NextRequest) {
         { action: '重新连接原 Channel，或先在 YouTube Studio 结束原直播。', retryable: false },
       )
     }
-    await saveTokens(candidate)
+    const authorized = await upsertAuthorizedChannel(channel)
+    await saveTokens(candidate, authorized.connection.id)
     const owner = await createOwnerSession()
     home.searchParams.set('auth', 'connected')
     const response = NextResponse.redirect(home, { headers: NO_STORE_HEADERS })

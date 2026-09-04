@@ -129,12 +129,12 @@ async function youtubeRequest<T>(
   path: string,
   init: RequestInit,
   operation: string,
-  options?: { quotaCost?: number; accessToken?: string },
+  options?: { quotaCost?: number; accessToken?: string; connectionId?: string },
 ): Promise<T> {
   if (quotaState.getQuotaState().exceeded) {
     throw new LivePilotError('QUOTA_EXCEEDED', 'YouTube API 每日配额已耗尽。')
   }
-  const token = options?.accessToken ?? await getValidAccessToken()
+  const token = options?.accessToken ?? await getValidAccessToken(options?.connectionId)
   let response: Response
   try {
     response = await fetch(API_BASE + path, {
@@ -175,14 +175,14 @@ export async function getCurrentChannelWithAccessToken(accessToken: string): Pro
  * An optional token is accepted only from server-side OAuth code; no credential is
  * included in the returned Channel DTO.
  */
-export async function getCurrentChannel(accessToken?: string): Promise<ChannelInfo> {
+export async function getCurrentChannel(accessToken?: string, connectionId?: string): Promise<ChannelInfo> {
   const data = await youtubeRequest<{
     items?: Array<{ id?: string; snippet?: { title?: string } }>
   }>(
     '/channels?' + new URLSearchParams({ part: 'id,snippet', mine: 'true', maxResults: '1' }),
     { method: 'GET' },
     '读取当前 YouTube Channel',
-    { accessToken },
+    { accessToken, connectionId },
   )
   const channel = data.items?.[0]
   if (!channel?.id) {
@@ -196,7 +196,7 @@ export async function getCurrentChannel(accessToken?: string): Promise<ChannelIn
  * The status is restricted by the type to `active` or `upcoming` and pagination is
  * completed server-side before any result reaches the dashboard.
  */
-async function listBroadcastStatus(status: 'active' | 'upcoming'): Promise<LiveBroadcast[]> {
+async function listBroadcastStatus(status: 'active' | 'upcoming', connectionId?: string): Promise<LiveBroadcast[]> {
   const items: LiveBroadcast[] = []
   let pageToken: string | undefined
   do {
@@ -211,6 +211,7 @@ async function listBroadcastStatus(status: 'active' | 'upcoming'): Promise<LiveB
       '/liveBroadcasts?' + params,
       { method: 'GET' },
       '读取 ' + status + ' Broadcast',
+      { connectionId },
     )
     items.push(...(page.items ?? []))
     pageToken = page.nextPageToken
@@ -222,8 +223,8 @@ async function listBroadcastStatus(status: 'active' | 'upcoming'): Promise<LiveB
  * Lists controllable active and upcoming Broadcasts, de-duplicated and ordered by
  * scheduled start time for deterministic browser presentation.
  */
-export async function listLiveBroadcasts(): Promise<LiveBroadcast[]> {
-  const groups = await Promise.all([listBroadcastStatus('active'), listBroadcastStatus('upcoming')])
+export async function listLiveBroadcasts(connectionId?: string): Promise<LiveBroadcast[]> {
+  const groups = await Promise.all([listBroadcastStatus('active', connectionId), listBroadcastStatus('upcoming', connectionId)])
   const unique = new Map<string, LiveBroadcast>()
   for (const item of groups.flat()) unique.set(item.id, item)
   return [...unique.values()].sort(
@@ -240,11 +241,12 @@ export async function listLiveBroadcasts(): Promise<LiveBroadcast[]> {
  * Reads one Broadcast by its server-validated YouTube ID.
  * A missing remote resource is represented as `null` rather than guessed local state.
  */
-export async function getBroadcastById(broadcastId: string): Promise<LiveBroadcast | null> {
+export async function getBroadcastById(broadcastId: string, connectionId?: string): Promise<LiveBroadcast | null> {
   const data = await youtubeRequest<{ items?: LiveBroadcast[] }>(
     '/liveBroadcasts?' + new URLSearchParams({ part: 'id,snippet,status', id: broadcastId }),
     { method: 'GET' },
     '读取 Broadcast 状态',
+    { connectionId },
   )
   return data.items?.[0] ?? null
 }
@@ -254,7 +256,7 @@ export async function getBroadcastById(broadcastId: string): Promise<LiveBroadca
  * Auto Start is disabled so OBS ingest cannot bypass the explicit Web start action;
  * only the resulting public Broadcast resource is returned.
  */
-export async function createBroadcast(input: CreateBroadcastInput): Promise<LiveBroadcast> {
+export async function createBroadcast(input: CreateBroadcastInput, connectionId?: string): Promise<LiveBroadcast> {
   return youtubeRequest<LiveBroadcast>(
     '/liveBroadcasts?part=id,snippet,status,contentDetails',
     {
@@ -274,6 +276,7 @@ export async function createBroadcast(input: CreateBroadcastInput): Promise<Live
       }),
     },
     '创建 Live Broadcast',
+    { connectionId },
   )
 }
 
@@ -281,7 +284,7 @@ export async function createBroadcast(input: CreateBroadcastInput): Promise<Live
  * Retrieves all Live Streams owned by the authorized Channel, following pagination.
  * Raw resources remain server-only because their ingestion data can contain Stream Keys.
  */
-async function listLiveStreams(): Promise<LiveStreamResource[]> {
+async function listLiveStreams(connectionId?: string): Promise<LiveStreamResource[]> {
   const items: LiveStreamResource[] = []
   let pageToken: string | undefined
   do {
@@ -291,6 +294,7 @@ async function listLiveStreams(): Promise<LiveStreamResource[]> {
       '/liveStreams?' + params,
       { method: 'GET' },
       '读取 YouTube Live Stream',
+      { connectionId },
     )
     items.push(...(page.items ?? []))
     pageToken = page.nextPageToken
@@ -320,7 +324,7 @@ function toSecret(stream: LiveStreamResource | undefined): LiveStreamSecret | nu
  * The returned ingest address and Stream Key are secrets intended only for server-side
  * orchestration and must never be serialized into browser responses.
  */
-export async function createLiveStream(): Promise<LiveStreamSecret> {
+export async function createLiveStream(connectionId?: string): Promise<LiveStreamSecret> {
   const stream = await youtubeRequest<LiveStreamResource>(
     '/liveStreams?part=id,snippet,cdn,status,contentDetails',
     {
@@ -335,6 +339,7 @@ export async function createLiveStream(): Promise<LiveStreamSecret> {
       }),
     },
     '创建 YouTube Live Stream',
+    { connectionId },
   )
   const secret = toSecret(stream)
   if (!secret) throw new LivePilotError('NO_STREAM', 'YouTube 创建了 Stream，但没有返回 ingest 配置。')
@@ -345,8 +350,8 @@ export async function createLiveStream(): Promise<LiveStreamSecret> {
  * Selects the dedicated, default, or sole existing Stream, creating one only when none
  * exist. Ambiguous multi-Stream inventories fail closed so the server never guesses a key.
  */
-export async function getOrCreateLiveStream(): Promise<LiveStreamSecret> {
-  const items = await listLiveStreams()
+export async function getOrCreateLiveStream(connectionId?: string): Promise<LiveStreamSecret> {
+  const items = await listLiveStreams(connectionId)
   const selected = items.find(
     /* Prefer only the Stream explicitly owned by LivePilot. */
     (item) => item.snippet?.title === LIVEPILOT_STREAM_TITLE,
@@ -356,7 +361,7 @@ export async function getOrCreateLiveStream(): Promise<LiveStreamSecret> {
       (item) => item.snippet?.isDefaultStream === true,
     )
     ?? (items.length === 1 ? items[0] : undefined)
-  if (!selected && items.length === 0) return createLiveStream()
+  if (!selected && items.length === 0) return createLiveStream(connectionId)
   if (!selected) {
     throw new LivePilotError(
       'NO_STREAM',
@@ -373,11 +378,12 @@ export async function getOrCreateLiveStream(): Promise<LiveStreamSecret> {
  * Reads the server-only ingest secret for an explicitly bound Stream ID.
  * Missing or incomplete YouTube resources return `null` and no secret is logged or exposed.
  */
-export async function getLiveStreamById(streamId: string): Promise<LiveStreamSecret | null> {
+export async function getLiveStreamById(streamId: string, connectionId?: string): Promise<LiveStreamSecret | null> {
   const data = await youtubeRequest<{ items?: LiveStreamResource[] }>(
     '/liveStreams?' + new URLSearchParams({ part: 'id,snippet,cdn', id: streamId }),
     { method: 'GET' },
     '读取已绑定的 Live Stream',
+    { connectionId },
   )
   return toSecret(data.items?.[0])
 }
@@ -387,7 +393,7 @@ export async function getLiveStreamById(streamId: string): Promise<LiveStreamSec
  * IDs must originate from validated YouTube state; expected operational failures are
  * normalized without leaking the underlying Stream Key.
  */
-export async function bindBroadcast(broadcastId: string, streamId: string): Promise<void> {
+export async function bindBroadcast(broadcastId: string, streamId: string, connectionId?: string): Promise<void> {
   try {
     const bound = await youtubeRequest<{ contentDetails?: { boundStreamId?: string } }>(
       '/liveBroadcasts/bind?' + new URLSearchParams({
@@ -397,6 +403,7 @@ export async function bindBroadcast(broadcastId: string, streamId: string): Prom
       }),
       { method: 'POST' },
       '绑定 Broadcast 与 Live Stream',
+      { connectionId },
     )
     if (bound.contentDetails?.boundStreamId !== streamId) {
       throw new LivePilotError('BIND_FAILED', 'YouTube 未确认 Broadcast 绑定到目标 Stream。')
@@ -417,7 +424,7 @@ export async function bindBroadcast(broadcastId: string, streamId: string): Prom
  * Reads the Broadcast controls that determine binding and transition safety.
  * The result contains configuration flags and a Stream ID only, never ingest credentials.
  */
-export async function getBroadcastContentDetails(broadcastId: string): Promise<BroadcastContentDetails | null> {
+export async function getBroadcastContentDetails(broadcastId: string, connectionId?: string): Promise<BroadcastContentDetails | null> {
   const data = await youtubeRequest<{
     items?: Array<{
       contentDetails?: {
@@ -431,6 +438,7 @@ export async function getBroadcastContentDetails(broadcastId: string): Promise<B
     '/liveBroadcasts?' + new URLSearchParams({ part: 'contentDetails', id: broadcastId }),
     { method: 'GET' },
     '读取 Broadcast contentDetails',
+    { connectionId },
   )
   const details = data.items?.[0]?.contentDetails
   return details ? {
@@ -445,19 +453,20 @@ export async function getBroadcastContentDetails(broadcastId: string): Promise<B
  * Re-reads the authoritative YouTube lifecycle for a Broadcast.
  * Callers use this instead of trusting stale browser or previously cached state.
  */
-export async function getBroadcastLifeCycleStatus(broadcastId: string): Promise<string | null> {
-  return (await getBroadcastById(broadcastId))?.status.lifeCycleStatus ?? null
+export async function getBroadcastLifeCycleStatus(broadcastId: string, connectionId?: string): Promise<string | null> {
+  return (await getBroadcastById(broadcastId, connectionId))?.status.lifeCycleStatus ?? null
 }
 
 /**
  * Reads authoritative ingest and health state for the bound Stream.
  * The returned summary intentionally excludes ingestion addresses and Stream Keys.
  */
-export async function getStreamStatus(streamId: string): Promise<StreamIngestStatus> {
+export async function getStreamStatus(streamId: string, connectionId?: string): Promise<StreamIngestStatus> {
   const data = await youtubeRequest<{ items?: LiveStreamResource[] }>(
     '/liveStreams?' + new URLSearchParams({ part: 'id,snippet,status', id: streamId }),
     { method: 'GET' },
     '读取 Stream ingest 状态',
+    { connectionId },
   )
   const stream = data.items?.[0]
   if (!stream?.id) throw new LivePilotError('NO_STREAM', '已绑定的 YouTube Stream 不存在。')
@@ -482,6 +491,7 @@ export async function getStreamStatus(streamId: string): Promise<StreamIngestSta
 export async function transitionBroadcast(
   broadcastId: string,
   target: 'testing' | 'live' | 'complete',
+  connectionId?: string,
 ): Promise<void> {
   await youtubeRequest(
     '/liveBroadcasts/transition?' + new URLSearchParams({
@@ -491,5 +501,6 @@ export async function transitionBroadcast(
     }),
     { method: 'POST' },
     'Broadcast transition(' + target + ')',
+    { connectionId },
   )
 }

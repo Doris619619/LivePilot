@@ -45,17 +45,29 @@ interface TokenResponse {
 }
 
 const globalAuth = globalThis as typeof globalThis & {
-  __livePilotRefresh?: Promise<string> | null
-  __livePilotAuthEpoch?: number
+  __livePilotRefreshByConnection?: Map<string, Promise<string>>
+  __livePilotAuthEpochByConnection?: Map<string, number>
 }
-globalAuth.__livePilotRefresh ??= null
-globalAuth.__livePilotAuthEpoch ??= 0
+globalAuth.__livePilotRefreshByConnection ??= new Map()
+globalAuth.__livePilotAuthEpochByConnection ??= new Map()
+
+/** Normalizes an optional legacy scope and rejects browser-shaped filesystem segments. */
+function connectionScope(connectionId?: string): string {
+  if (!connectionId) return 'legacy'
+  if (!/^[A-Za-z0-9_-]{12,128}$/.test(connectionId)) {
+    throw new LivePilotError('INVALID_STATE', 'OAuth connection ID 无效。', { retryable: false })
+  }
+  return connectionId
+}
 
 /**
  * 返回加密 YouTube Token 的服务端私有存储路径；密文文件不得置于 public 或返回浏览器。
  */
-function tokenPath(): string {
-  return dataPath('youtube-tokens.enc')
+function tokenPath(connectionId?: string): string {
+  const scope = connectionScope(connectionId)
+  return scope === 'legacy'
+    ? dataPath('youtube-tokens.enc')
+    : dataPath('connections', scope, 'youtube-tokens.enc')
 }
 
 /**
@@ -222,41 +234,42 @@ export async function exchangeAuthorizationCode(code: string, codeVerifier: stri
 /**
  * 将 YouTube Token 作为认证密文写入服务端私有文件，禁止把明文 Token 返回浏览器。
  */
-export async function saveTokens(tokens: YouTubeTokens): Promise<void> {
-  await writePrivateFile(tokenPath(), sealJson(tokens))
+export async function saveTokens(tokens: YouTubeTokens, connectionId?: string): Promise<void> {
+  await writePrivateFile(tokenPath(connectionId), sealJson(tokens))
 }
 
 /**
  * 从服务端私有文件读取并认证解密 YouTube Token；未连接时返回 null。
  * 返回值仅供服务端 Google API 调用链使用。
  */
-export async function getTokens(): Promise<YouTubeTokens | null> {
-  const raw = await readPrivateFile(tokenPath())
+export async function getTokens(connectionId?: string): Promise<YouTubeTokens | null> {
+  const raw = await readPrivateFile(tokenPath(connectionId))
   return raw ? unsealJson<YouTubeTokens>(raw) : null
 }
 
 /**
  * 仅以布尔值报告服务端是否持有 Refresh Token，不向浏览器暴露 Token 内容。
  */
-export async function isTokenConnected(): Promise<boolean> {
-  return Boolean((await getTokens())?.refreshToken)
+export async function isTokenConnected(connectionId?: string): Promise<boolean> {
+  return Boolean((await getTokens(connectionId))?.refreshToken)
 }
 
 /**
  * 递增认证 epoch 并删除本地 Token 密文，使进行中的旧刷新结果不能重新写回已断开的账号。
  */
-export async function clearTokens(): Promise<void> {
-  globalAuth.__livePilotAuthEpoch = (globalAuth.__livePilotAuthEpoch ?? 0) + 1
-  await deletePrivateFile(tokenPath())
+export async function clearTokens(connectionId?: string): Promise<void> {
+  const scope = connectionScope(connectionId)
+  globalAuth.__livePilotAuthEpochByConnection?.set(scope, (globalAuth.__livePilotAuthEpochByConnection?.get(scope) ?? 0) + 1)
+  await deletePrivateFile(tokenPath(connectionId))
 }
 
 /**
  * 为指定认证 epoch 刷新 Access Token，并在持久化前再次确认账号未被并发断开。
  * Refresh Token 与 Client Secret 始终只发送到 Google 的服务端 Token endpoint。
  */
-async function refreshAccessTokenForEpoch(epoch: number): Promise<string> {
+async function refreshAccessTokenForEpoch(epoch: number, connectionId?: string): Promise<string> {
   const config = requireConfigured()
-  const current = await getTokens()
+  const current = await getTokens(connectionId)
   if (!current?.refreshToken) throw new LivePilotError('NOT_CONNECTED', '尚未连接 YouTube。')
   const data = await tokenRequest(new URLSearchParams({
     refresh_token: current.refreshToken,
@@ -265,7 +278,8 @@ async function refreshAccessTokenForEpoch(epoch: number): Promise<string> {
     grant_type: 'refresh_token',
   }))
   if (!data.access_token) throw new LivePilotError('TOKEN_INVALID', 'Google 未返回新的 access token。')
-  if (epoch !== (globalAuth.__livePilotAuthEpoch ?? 0)) {
+  const scope = connectionScope(connectionId)
+  if (epoch !== (globalAuth.__livePilotAuthEpochByConnection?.get(scope) ?? 0)) {
     throw new LivePilotError('NOT_CONNECTED', '账号已断开，已忽略旧的 token refresh 结果。')
   }
   const updated: YouTubeTokens = {
@@ -273,39 +287,42 @@ async function refreshAccessTokenForEpoch(epoch: number): Promise<string> {
     refreshToken: data.refresh_token || current.refreshToken,
     expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000,
   }
-  await saveTokens(updated)
+  await saveTokens(updated, connectionId)
   return updated.accessToken
 }
 
 /**
  * 在共享刷新 Promise 完成后释放进程内去重槽位，使后续过期检查可以启动新刷新。
  */
-function clearRefreshPromise(): void {
-  globalAuth.__livePilotRefresh = null
+function clearRefreshPromise(connectionId?: string): void {
+  globalAuth.__livePilotRefreshByConnection?.delete(connectionScope(connectionId))
 }
 
 /**
  * 返回仍有安全余量的 Access Token，过期临近时以进程级共享 Promise 去重并发刷新。
  * Token 只返回服务端调用方；认证 epoch 防止 disconnect 与 refresh 竞态恢复旧凭据。
  */
-export async function getValidAccessToken(): Promise<string> {
-  const tokens = await getTokens()
+export async function getValidAccessToken(connectionId?: string): Promise<string> {
+  const tokens = await getTokens(connectionId)
   if (!tokens) throw new LivePilotError('NOT_CONNECTED', '尚未连接 YouTube。')
   if (Date.now() < tokens.expiresAt - 5 * 60 * 1000) return tokens.accessToken
-  if (globalAuth.__livePilotRefresh) return globalAuth.__livePilotRefresh
+  const scope = connectionScope(connectionId)
+  const pending = globalAuth.__livePilotRefreshByConnection?.get(scope)
+  if (pending) return pending
 
-  const epoch = globalAuth.__livePilotAuthEpoch ?? 0
-  globalAuth.__livePilotRefresh = refreshAccessTokenForEpoch(epoch).finally(clearRefreshPromise)
-  return globalAuth.__livePilotRefresh
+  const epoch = globalAuth.__livePilotAuthEpochByConnection?.get(scope) ?? 0
+  const refresh = refreshAccessTokenForEpoch(epoch, connectionId).finally(() => clearRefreshPromise(connectionId))
+  globalAuth.__livePilotRefreshByConnection?.set(scope, refresh)
+  return refresh
 }
 
 /**
  * 先权威删除本地 Token，再尽力向 Google 撤销 Refresh Token；远端网络失败不会恢复本地凭据。
  * 撤销请求完全在服务端执行，浏览器不会接触待撤销 Token。
  */
-export async function revokeAndClearTokens(): Promise<void> {
-  const tokens = await getTokens()
-  await clearTokens()
+export async function revokeAndClearTokens(connectionId?: string): Promise<void> {
+  const tokens = await getTokens(connectionId)
+  await clearTokens(connectionId)
   if (!tokens?.refreshToken) return
   try {
     await fetch(REVOKE_ENDPOINT, {

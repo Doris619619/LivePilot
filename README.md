@@ -1,21 +1,16 @@
 # LivePilot
 
-LivePilot 是一个浏览器可访问的单账号 YouTube Live 控制台。它采用 Next.js + TypeScript：浏览器负责选择直播和发起操作，Google OAuth、Refresh Token、Client Secret、YouTube API 调用与状态机全部运行在服务端。
+LivePilot 是一个浏览器可访问的本机 YouTube Live 控制台，面向逐步集中管理多个频道。它采用 Next.js + TypeScript：浏览器只选择 Channel、Live Job 和受控媒体资源；OAuth、Refresh Token、FFmpeg、YouTube API 调用与状态机全部运行在服务端。
 
-本轮没有 Electron、preload、IPC、NSIS，也没有 RTMP Relay。OBS 直接使用 YouTube Studio 中目标 Stream 的 RTMPS 地址和 Stream Key 推流；LivePilot 不会把 Stream Key 返回浏览器。
+核心链路不依赖 OBS：`LivePilot → FFmpeg Worker → YouTube`。OBS 既不是安装前提也不是本轮集成目标；YouTube Stream Key 仅在服务端短暂用于 FFmpeg，绝不返回浏览器。
 
-## 单账号 MVP
+## 第一阶段能力
 
-- 连接或断开一个 Google / YouTube 账号
-- 显示当前频道名称与 Channel ID
-- 查询未结束的 Broadcast，或创建默认 `unlisted` 的测试 Broadcast
-- 确定性复用已有 Stream；没有合适 Stream 时创建一个可复用 RTMP Stream
-- 绑定 Broadcast 与 Stream，并重新读取确认 `boundStreamId`
-- 每 2 秒显示 ingest、health 与 Broadcast lifecycle 状态
-- 只在 `streamStatus == active` 后允许 Start Live
-- 按 `enableMonitorStream` 决定是否先 transition 到 `testing`
-- 重试 transition，并重新查询确认真正进入 `live` / `complete`
-- 对 OAuth、token、频道、直播权限、bind、ingest、transition、quota 与网络错误给出可行动提示
+- 每个 OAuth Connection、Channel、Live Job 与 Live Run 均有独立记录；Job 不保存一次性 Broadcast、PID 或 runtime。
+- 从管理员配置的媒体根目录选择循环视频和兼容 MP3 音乐列表；独立音乐默认忽略视频内嵌音轨。
+- 为 Run 创建默认 `unlisted` Broadcast、复用或创建 Channel 所有的 Stream、绑定并确认。
+- 在 Windows 上启动/停止受控 FFmpeg，采集 `-progress` 心跳、frame、fps、bitrate 与 speed。
+- 仅在 FFmpeg 真实推进且 YouTube ingest `active` 后 transition 到 `live`；结束时先确认 `complete`，再停止 worker。
 
 ## 架构与安全边界
 
@@ -30,17 +25,17 @@ Next.js route handlers (127.0.0.1 only)
                  ▼
 Google OAuth + YouTube Live Streaming API
 
-OBS ──────────────────────────────► YouTube ingest
-     direct RTMPS with Studio key
+FFmpeg Worker ────────────────────► YouTube ingest
+  server-held RTMPS key only
 ~~~
 
 - 开发和生产启动脚本都只监听 `127.0.0.1`。当前版本不是可直接暴露到公网或局域网的多用户服务。
 - 所有修改型 API 都要求同源、JSON、受会话约束的 CSRF token；连接后的控制 API 还要求本地 owner session。
 - OAuth 使用服务端一次性 `state`、PKCE 和与浏览器 flow 绑定的 transaction；callback transaction 在换 token 前原子消费，不能重放。
-- Access Token、Refresh Token、OAuth transaction 和安全状态使用 AES-256-GCM 加密后原子写入 `.data`；应用密钥来自 server-only 环境变量。
-- Token 提前 5 分钟刷新，并使用 single-flight 与授权 epoch 防止并发 refresh 或断开后的旧请求把 token 写回。
-- Client Secret、Token 和 Stream Key 不进入 React props、API DTO、DOM、日志或 Git。页面只显示 Stream ID、名称和非敏感状态。
-- Start 会再次读取 ingest 状态，防止用户依据过期 UI 点击；活动 Broadcast 和本地风险记录会阻止危险的切换、重授权或断开。
+- Access Token、Refresh Token 与 OAuth transaction 使用 AES-256-GCM 加密后按 Connection 原子写入 `.data`；应用密钥来自 server-only 环境变量。
+- Token refresh 按 Connection single-flight；Channel operation lock 保证一个频道只能有一个 active Run，锁顺序固定为 Connection → Channel → Job。
+- Client Secret、Token、Stream Key、ingest URL、FFmpeg 命令和原始 stderr 不进入 React props、API DTO、DOM、日志或 Git。
+- Run 持久化 worker/ingest/lifecycle 和脱敏错误。服务重启后的陈旧 PID 标为 `recovery_required`，不会被不安全地复用或杀死。
 
 `.data` 只适合本机单实例 MVP。若未来部署到多实例或公网，必须先增加真实用户认证、共享数据库/密钥管理、分布式锁、HTTPS 与运维审计；不能直接复用当前本地 owner-session 边界。
 
@@ -48,9 +43,9 @@ OBS ─────────────────────────�
 
 - Node.js 20.9 或更高版本
 - npm
-- OBS Studio
 - 已创建 YouTube Channel 且已启用直播功能的 Google 账号
 - Google Cloud 项目已启用 YouTube Data API v3
+- 一个或多个本地媒体根目录；第一阶段音乐列表仅支持采样率和声道一致的 MP3
 
 YouTube 首次启用直播可能存在平台等待期。应用无法替代 Google 的账号审核或直播权限开通。
 
@@ -81,6 +76,9 @@ YouTube 首次启用直播可能存在平台等待期。应用无法替代 Googl
    YOUTUBE_REDIRECT_URI=http://127.0.0.1:3000/api/auth/callback
    LIVEPILOT_APP_SECRET=至少-32-个随机字节
    LIVEPILOT_DATA_DIR=.data
+   LIVEPILOT_MEDIA_ROOTS=D:\LiveMedia;E:\Archive\LiveMedia
+   # 可选：使用已审计的 ffmpeg.exe，而不是随依赖安装的版本
+   # LIVEPILOT_FFMPEG_PATH=D:\Tools\ffmpeg\bin\ffmpeg.exe
    ~~~
 
 可用 PowerShell 生成本地应用密钥；只把输出写进 `.env.local`：
@@ -114,34 +112,31 @@ npm run build
 npm run start
 ~~~
 
-## OBS 与开播流程
+## FFmpeg 开播流程
 
-1. 打开 LivePilot，点击“连接 Google / YouTube”，在 Google 页面完成授权。
-2. 确认页面显示正确的 Channel。
-3. 选择已有 Broadcast，或创建默认不公开的测试 Broadcast。
-4. LivePilot 会选择或创建可复用 Stream，完成 bind，并显示 Stream ID 和状态。
-5. 在 YouTube Studio 的直播控制室读取该 Stream 的 RTMPS 地址和 Stream Key，把它们配置到 OBS。LivePilot 不提供查看或复制密钥的接口。
-6. OBS 开始推流，等待页面显示 ingest `active`。
-7. 点击“开始直播”。服务端会重新确认 ingest，必要时先进入 `testing`，再 transition 到 `live` 并轮询确认。
-8. 在一个没有频道管理权限的窗口打开公开观看页，确认画面真实可见。
-9. 点击“结束直播”。服务端 transition 到 `complete` 并轮询确认。
-10. 停止 OBS，并确认 YouTube 观看页已结束。
+1. 配置 `LIVEPILOT_MEDIA_ROOTS`，把视频和 MP3 放在允许目录下，重启服务。
+2. 打开 LivePilot，逐个连接 Google / YouTube Channel。
+3. 为 Channel 创建 Live Job，选择循环视频和一个或多个 MP3。
+4. 点击“开始直播”。服务端创建 Live Run、准备/绑定 Broadcast 与 reusable Stream，然后启动 FFmpeg。
+5. LivePilot 收到 FFmpeg 推进心跳后轮询 YouTube ingest；只有 `active` 才会 transition 到 `live` 并确认。
+6. 在无频道管理权限的窗口确认真实观看页。
+7. 点击“结束 Run”。服务端确认 `complete` 后才停止 FFmpeg。
 
 建议第一次始终使用 `unlisted` 测试 Broadcast。若控制台因 quota、网络或进程故障无法确认结束，应立即在 YouTube Studio 手工结束直播。
 
 ## 状态机
 
 ~~~text
-选择/创建 Broadcast
-  → 排除其他 active/testing Broadcast
-  → 读取已绑定 Stream，或确定性复用/创建可复用 Stream
-  → bind 并重新读取确认
-  → OBS 直接推流到 YouTube
+Job 快照创建 Run
+  → Channel lock 排除其他 active Run
+  → 选择/创建 Broadcast，复用/创建 Channel Stream 并 bind 确认
+  → 启动 FFmpeg，收到结构化 progress heartbeat
   → streamStatus == active
   → enableMonitorStream == true ? testing 并确认 : 跳过 testing
   → transition(live) 并确认 lifeCycleStatus == live
-  → 用户点击结束
+  → 用户点击结束 Run
   → transition(complete) 并确认 lifeCycleStatus == complete
+  → 停止同一 Run 的 FFmpeg worker
 ~~~
 
 `liveStarting` 不等同于成功；只有 API 重新读取到精确的 `live` / `complete` 才向页面报告完成。
@@ -161,7 +156,7 @@ npm run build
 npm run verify
 ~~~
 
-单元测试使用假的 Google/YouTube 网络边界，不包含真实账号、Token 或 Stream Key。真实 OAuth、OBS ingest、观看页与 YouTube lifecycle 必须由账号本人按上一节验收。
+单元测试使用假的 Google/YouTube 网络边界，不包含真实账号、Token 或 Stream Key。真实 OAuth、FFmpeg ingest、观看页与 YouTube lifecycle 必须由账号本人按上一节验收。
 
 ## 常见错误
 

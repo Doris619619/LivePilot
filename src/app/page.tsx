@@ -1,9 +1,9 @@
 /**
- * LivePilot 首页入口，只渲染单账号 YouTube Live 控制台。
+ * LivePilot 首页入口，只渲染多账号 Channel/Job/Run 控制台。
  */
-import { LiveConsole } from '@/components/live-console'
+import { ControlPlaneConsole } from '@/components/control-plane-console'
 
-/** 返回浏览器端直播控制台。 */
+/** 返回浏览器端多账号直播控制台。 */
 export default function HomePage() {
-  return <LiveConsole />
+  return <ControlPlaneConsole />
 }

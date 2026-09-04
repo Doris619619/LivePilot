@@ -156,4 +156,16 @@ describe('youtubeAuth', () => {
     await expect(refreshing).rejects.toMatchObject({ code: 'NOT_CONNECTED' })
     await expect(getTokens()).resolves.toBeNull()
   })
+
+  /** Verifies that two OAuth connections use separate encrypted files instead of a global token slot. */
+  it('isolates encrypted tokens by OAuth connection ID', async () => {
+    const first = 'connection-alpha'
+    const second = 'connection-bravo'
+    await saveTokens({ accessToken: 'access-a', refreshToken: 'refresh-a', expiresAt: 1 }, first)
+    await saveTokens({ accessToken: 'access-b', refreshToken: 'refresh-b', expiresAt: 2 }, second)
+
+    await expect(getTokens(first)).resolves.toMatchObject({ refreshToken: 'refresh-a' })
+    await expect(getTokens(second)).resolves.toMatchObject({ refreshToken: 'refresh-b' })
+    await expect(getTokens()).resolves.toBeNull()
+  })
 })

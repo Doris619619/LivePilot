@@ -68,6 +68,13 @@ export interface LiveServiceOptions {
   now?: () => Date
   /** Test seam for mutation serialization; production uses the filesystem lease. */
   lock?: <T>(operation: string, action: () => Promise<T>) => Promise<T>
+  /** Account/Channel-scoped risk persistence; defaults to the legacy singleton store. */
+  safety?: {
+    read: () => Promise<{ riskBroadcastId: string; guardedChannelId: string; markedAt: number } | null>
+    mark: (broadcastId: string, channelId: string) => Promise<void>
+    clear: (broadcastId?: string) => Promise<void>
+    reconcile: (channelId: string, activeBroadcastIds: string[]) => Promise<void>
+  }
 }
 
 interface Inventory {
@@ -79,13 +86,15 @@ interface Inventory {
 /** Coordinates safe single-account Broadcast selection, binding, and transitions. */
 export class LiveService {
   private readonly api: LiveServiceApi
-  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock'>>
+  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock' | 'safety'>>
   /** Wait implementation used by bounded lifecycle polling and retries. */
   private readonly sleepFn: (milliseconds: number) => Promise<void>
   /** Server clock used only when constructing a new test Broadcast schedule. */
   private readonly now: () => Date
   /** Cross-request serializer guarding all state-changing operations. */
   private readonly lock: <T>(operation: string, action: () => Promise<T>) => Promise<T>
+  /** Persists uncertain lifecycle state inside the owning Channel/Run scope. */
+  private readonly safety: Required<NonNullable<LiveServiceOptions['safety']>>
 
   /**
    * Creates a lifecycle service around the server-only YouTube adapter.
@@ -112,6 +121,12 @@ export class LiveService {
       () => new Date()
     )
     this.lock = options.lock ?? withOperationLock
+    this.safety = options.safety ?? {
+      read: readSafetyState,
+      mark: markBroadcastRisk,
+      clear: clearBroadcastRisk,
+      reconcile: reconcileBroadcastRisk,
+    }
   }
 
   /**
@@ -218,7 +233,7 @@ export class LiveService {
           throw new LivePilotError('INVALID_STATE', '此 Broadcast 已完成，不能再次开始。', { retryable: false })
         }
 
-        await markBroadcastRisk(broadcastId, inventory.channel.id)
+        await this.safety.mark(broadcastId, inventory.channel.id)
         if (current === 'liveStarting') {
           current = await this.waitForLifeCycle(broadcastId, ['live'])
           if (current !== 'live') throw new LivePilotError('LIVE_TRANSITION_FAILED', 'YouTube 未确认 liveStarting 进入 live。')
@@ -259,7 +274,7 @@ export class LiveService {
       async () => {
         const current = await this.api.getBroadcastLifeCycleStatus(broadcastId)
         if (current === 'complete') {
-          await clearBroadcastRisk(broadcastId)
+          await this.safety.clear(broadcastId)
           return this.snapshot(broadcastId)
         }
         if (!current) throw new LivePilotError('NO_BROADCAST', 'YouTube 找不到当前 Broadcast。')
@@ -271,7 +286,7 @@ export class LiveService {
           )
         }
         await this.transitionAndConfirmComplete(broadcastId)
-        await clearBroadcastRisk(broadcastId)
+        await this.safety.clear(broadcastId)
         return this.snapshot(broadcastId)
       },
     )
@@ -287,7 +302,7 @@ export class LiveService {
       /* Reconcile remote inventory and the persisted risk marker atomically. */
       async () => {
         const inventory = await this.inventory()
-        const risk = await readSafetyState()
+        const risk = await this.safety.read()
         if (inventory.activeIds.length > 0 || risk) {
           throw new LivePilotError(
             'INVALID_STATE',
@@ -319,7 +334,7 @@ export class LiveService {
         /* Persist and compare only YouTube Broadcast IDs, not the mutable resource body. */
         (item) => item.id,
       )
-    const existingRisk = await readSafetyState()
+    const existingRisk = await this.safety.read()
     if (existingRisk && existingRisk.guardedChannelId !== channel.id) {
       throw new LivePilotError(
         'INVALID_STATE',
@@ -328,13 +343,13 @@ export class LiveService {
       )
     }
     if (activeIds.length > 0) {
-      await reconcileBroadcastRisk(channel.id, activeIds)
+      await this.safety.reconcile(channel.id, activeIds)
     } else if (existingRisk) {
       const exact = await this.api.getBroadcastLifeCycleStatus(existingRisk.riskBroadcastId)
       if (exact && ACTIVE_LIFE_CYCLES.has(exact)) {
         activeIds.push(existingRisk.riskBroadcastId)
       } else if (exact) {
-        await clearBroadcastRisk(existingRisk.riskBroadcastId)
+        await this.safety.clear(existingRisk.riskBroadcastId)
       }
     }
     return { channel, broadcasts, activeIds }

@@ -6,6 +6,7 @@ import 'server-only'
 
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
+import { dirname, join } from 'node:path'
 import { dataPath } from './storage'
 import { LivePilotError } from './errors'
 
@@ -28,8 +29,16 @@ function sleep(milliseconds: number): Promise<void> {
  * `operation` is diagnostic metadata and `action` must contain the complete critical
  * section; ownership is verified before cleanup so one request cannot release another.
  */
-export async function withOperationLock<T>(operation: string, action: () => Promise<T>): Promise<T> {
-  const lockPath = dataPath('operation.lock')
+export async function withNamedOperationLock<T>(
+  scope: string,
+  operation: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(scope)) {
+    throw new LivePilotError('INVALID_STATE', '操作锁范围无效。', { retryable: false })
+  }
+  const lockPath = dataPath('locks', scope + '.lock')
+  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 })
   const startedAt = Date.now()
   const owner = randomBytes(16).toString('hex')
 
@@ -37,7 +46,7 @@ export async function withOperationLock<T>(operation: string, action: () => Prom
     try {
       await mkdir(lockPath, { mode: 0o700 })
       await writeFile(
-        dataPath('operation.lock', 'owner.json'),
+        join(lockPath, 'owner.json'),
         JSON.stringify({ owner, operation, createdAt: Date.now() }),
         { encoding: 'utf8', mode: 0o600 },
       )
@@ -65,10 +74,18 @@ export async function withOperationLock<T>(operation: string, action: () => Prom
     return await action()
   } finally {
     try {
-      const metadata = JSON.parse(await readFile(dataPath('operation.lock', 'owner.json'), 'utf8')) as { owner?: string }
+      const metadata = JSON.parse(await readFile(join(lockPath, 'owner.json'), 'utf8')) as { owner?: string }
       if (metadata.owner === owner) await rm(lockPath, { recursive: true, force: true })
     } catch {
       // A stale-lock recovery may already have removed the lease.
     }
   }
+}
+
+/**
+ * Serializes legacy single-account operations with the historic lock name.
+ * New connection, channel, and job callers use the explicitly scoped helper above.
+ */
+export async function withOperationLock<T>(operation: string, action: () => Promise<T>): Promise<T> {
+  return withNamedOperationLock('legacy-operation', operation, action)
 }

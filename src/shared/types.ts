@@ -21,6 +21,14 @@ export type PublicErrorCode =
   | 'QUOTA_EXCEEDED'
   | 'NETWORK_ERROR'
   | 'BUSY'
+  | 'RUN_ALREADY_ACTIVE'
+  | 'MEDIA_NOT_FOUND'
+  | 'MEDIA_INVALID'
+  | 'FFMPEG_UNAVAILABLE'
+  | 'WORKER_START_FAILED'
+  | 'WORKER_CRASHED'
+  | 'WORKER_UNRESPONSIVE'
+  | 'INGEST_TIMEOUT'
   | 'INVALID_STATE'
   | 'UNKNOWN'
 
@@ -93,5 +101,77 @@ export interface AppSnapshot {
 
 export interface DashboardPayload {
   snapshot: AppSnapshot
+  csrfToken: string
+}
+
+/** Browser-safe summary of one OAuth connection; token material is never included. */
+export interface ConnectionSummary {
+  id: string
+  label: string
+  connected: boolean
+}
+
+/** Browser-safe YouTube channel owned by a server-side OAuth connection. */
+export interface ChannelSummary {
+  id: string
+  connectionId: string
+  youtubeChannelId: string
+  title: string
+  reusableStreamId: string | null
+}
+
+/** A media file selected from a server-configured root, never an arbitrary path. */
+export interface MediaAsset {
+  id: string
+  name: string
+  kind: 'video' | 'audio'
+}
+
+/** Long-lived media preset. Runtime IDs and status deliberately do not belong here. */
+export interface LiveJobSummary {
+  id: string
+  channelId: string
+  name: string
+  videoAssetId: string
+  audioAssetIds: string[]
+  loopVideo: boolean
+  loopAudio: boolean
+  updatedAt: string
+}
+
+export type WorkerPhase = 'starting' | 'pushing' | 'stopping' | 'stopped' | 'crashed' | 'unresponsive' | 'recovery_required'
+export type RunPhase = 'preparing' | 'waiting_for_worker' | 'waiting_for_ingest' | 'transitioning_live' | 'live' | 'stopping' | 'completed' | 'failed' | 'stop_failed'
+
+/** The non-secret operational state of an individual execution of a Live Job. */
+export interface LiveRunSummary {
+  id: string
+  jobId: string
+  channelId: string
+  phase: RunPhase
+  workerPhase: WorkerPhase
+  broadcastId: string | null
+  streamId: string | null
+  youtubeLifecycle: string | null
+  ingestStatus: string | null
+  progress: { frame: number | null; fps: number | null; bitrate: string | null; speed: string | null; outTimeMs: number | null; heartbeatAt: string | null }
+  exitCode: number | null
+  error: PublicError | null
+  startedAt: string
+  endedAt: string | null
+}
+
+/** Browser dashboard for the first multi-account, job/run-based console. */
+export interface ControlPlaneSnapshot {
+  configured: boolean
+  connections: ConnectionSummary[]
+  channels: ChannelSummary[]
+  jobs: LiveJobSummary[]
+  runs: LiveRunSummary[]
+  media: MediaAsset[]
+  error: PublicError | null
+}
+
+export interface ControlPlanePayload {
+  snapshot: ControlPlaneSnapshot
   csrfToken: string
 }
