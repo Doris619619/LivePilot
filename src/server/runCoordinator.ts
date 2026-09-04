@@ -57,6 +57,15 @@ export class RunCoordinator {
     this.pollAttempts = options.pollAttempts ?? POLL_ATTEMPTS
   }
 
+  /** Creates a Channel-scoped lifecycle service with the outer Run lock already held. */
+  private lifecycle(api: LiveServiceApi, channelId: string): LiveService {
+    return new LiveService(api, {
+      lock: async (_operation, action) => action(), safetyScope: channelId, sleep: this.sleepFn,
+      confirmationPollMs: POLL_MS, confirmationMaxAttempts: this.pollAttempts,
+      transitionRetryMs: POLL_MS, transitionMaxAttempts: this.pollAttempts,
+    })
+  }
+
   /** Registers/replaces the unique OBS instance for a Channel after server-side encryption. */
   async registerObs(channelId: string, label: string, port: number, password: string): Promise<void> {
     const { registerObsInstance } = await import('./controlPlaneStore')
@@ -91,8 +100,7 @@ export class RunCoordinator {
         for (let attempt = 0; attempt < this.pollAttempts; attempt += 1) { ingest = await api.getStreamStatus(stream.streamId); await updateRun(run.id, { ingestStatus: ingest.streamStatus }); if (ingest.streamStatus === 'active') break; if (attempt + 1 < this.pollAttempts) await this.sleepFn(POLL_MS) }
         if (ingest?.streamStatus !== 'active') throw new LivePilotError('INGEST_TIMEOUT', 'OBS 已启动，但 YouTube ingest 未在限定时间内 active。')
         await updateRun(run.id, { phase: 'transitioning_live' })
-        const lifecycle = new LiveService(api, { lock: async (_operation, action) => action(), safetyScope: channel.id, sleep: this.sleepFn, confirmationPollMs: POLL_MS, confirmationMaxAttempts: this.pollAttempts, transitionRetryMs: POLL_MS, transitionMaxAttempts: this.pollAttempts })
-        await lifecycle.startBroadcast(broadcast.id)
+        await this.lifecycle(api, channel.id).startBroadcast(broadcast.id)
         await updateRun(run.id, { phase: 'live', youtubeLifecycle: 'live' })
       } catch (error) { await updateRun(run.id, { phase: obsStarted ? 'recovery_required' : 'failed', obsState: obsStarted ? 'recovery_required' : 'unknown', error: toPublicError(error) }); if (obsStarted) await observeObs(obs.id, 'recovery_required'); throw error }
     })
@@ -103,13 +111,10 @@ export class RunCoordinator {
     await withChannelLock(channel.connectionId, channel.id, 'stop-run', async () => {
       const latest = await requireRun(runId); if (!latest.broadcastId) throw new LivePilotError('INVALID_STATE', 'Run 尚无 Broadcast，不能安全结束。', { retryable: false })
       const api = this.apiFor(channel.connectionId)
-      try { await api.transitionBroadcast(latest.broadcastId, 'complete') } catch (error) { await updateRun(latest.id, { phase: 'stop_failed', error: toPublicError(error) }); throw error }
-      let lifecycle: string | null = null
-      for (let attempt = 0; attempt < this.pollAttempts; attempt += 1) { lifecycle = await api.getBroadcastLifeCycleStatus(latest.broadcastId); if (lifecycle === 'complete') break; if (attempt + 1 < this.pollAttempts) await this.sleepFn(POLL_MS) }
-      if (lifecycle !== 'complete') { const error = new LivePilotError('COMPLETE_TRANSITION_FAILED', 'YouTube 未确认 complete；OBS 不会停止。'); await updateRun(latest.id, { phase: 'stop_failed', error: toPublicError(error) }); throw error }
+      try { await this.lifecycle(api, channel.id).stopBroadcast(latest.broadcastId) } catch (error) { await updateRun(latest.id, { phase: 'stop_failed', error: toPublicError(error) }); throw error }
       const obs = await requireObsForChannel(channel.id); const client = this.obsClient
-      try { await client.stopStream(endpoint(obs)); const seen = new Date().toISOString(); await observeObs(obs.id, 'inactive'); await updateRun(latest.id, { phase: 'completed', youtubeLifecycle: lifecycle, obsState: 'inactive', obsLastSeenAt: seen, endedAt: seen }) }
-      catch (error) { await observeObs(obs.id, 'recovery_required'); await updateRun(latest.id, { phase: 'recovery_required', youtubeLifecycle: lifecycle, obsState: 'recovery_required', obsError: toPublicError(error), error: toPublicError(error) }); throw new LivePilotError('OBS_STOP_FAILED', 'YouTube 已 complete，但 OBS 未确认停止；需要恢复确认。', { cause: error, retryable: false }) }
+      try { await client.stopStream(endpoint(obs)); const seen = new Date().toISOString(); await observeObs(obs.id, 'inactive'); await updateRun(latest.id, { phase: 'completed', youtubeLifecycle: 'complete', obsState: 'inactive', obsLastSeenAt: seen, endedAt: seen }) }
+      catch (error) { await observeObs(obs.id, 'recovery_required'); await updateRun(latest.id, { phase: 'recovery_required', youtubeLifecycle: 'complete', obsState: 'recovery_required', obsError: toPublicError(error), error: toPublicError(error) }); throw new LivePilotError('OBS_STOP_FAILED', 'YouTube 已 complete，但 OBS 未确认停止；需要恢复确认。', { cause: error, retryable: false }) }
     })
   }
 }
