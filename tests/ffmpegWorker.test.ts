@@ -1,6 +1,6 @@
 /** Validates FFmpeg structured progress parsing without spawning a real media process. */
 import { afterEach, describe, expect, it } from 'vitest'
-import { buildYouTubeVideoArgs, FfmpegProgressDecoder, parseFfmpegProgress, resolveFfmpegHttpProxy, resolveFfmpegVideoEncoder } from '@/server/ffmpegWorker'
+import { buildYouTubeOutputArgs, buildYouTubeVideoArgs, FfmpegProgressDecoder, parseFfmpegProgress, resolveFfmpegHttpProxy, resolveFfmpegVideoEncoder } from '@/server/ffmpegWorker'
 
 /** Covers the worker heartbeat contract used to distinguish pushing from process liveness. */
 describe('parseFfmpegProgress', () => {
@@ -87,5 +87,18 @@ describe('YouTube video encoding', () => {
     expect(buildYouTubeVideoArgs()).toEqual(expect.arrayContaining(['-c:v', 'h264_qsv', '-pix_fmt', 'nv12']))
     process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER = 'anything-from-a-browser'
     expect(() => resolveFfmpegVideoEncoder()).toThrow(/受支持/)
+  })
+})
+
+/** Keeps output recovery bounded and server-owned when a local proxy drops one RTMPS tunnel. */
+describe('YouTube RTMPS output', () => {
+  /** Uses the live RTMP mode and FIFO recovery without leaking a target into the browser API. */
+  it('builds a bounded keyframe-aligned recovery output', () => {
+    expect(buildYouTubeOutputArgs('rtmps://ingest.example.test/live2/server-secret', 'http://127.0.0.1:7890')).toEqual(expect.arrayContaining([
+      '-rtmp_live', 'live', '-tcp_nodelay', '1', '-http_proxy', 'http://127.0.0.1:7890',
+      '-f', 'fifo', '-fifo_format', 'flv', '-attempt_recovery', '1', '-recover_any_error', '1',
+      '-max_recovery_attempts', '12', '-recovery_wait_time', '2', '-restart_with_keyframe', '1',
+      'rtmps://ingest.example.test/live2/server-secret',
+    ]))
   })
 })

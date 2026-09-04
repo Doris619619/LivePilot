@@ -41,7 +41,9 @@ export interface StartWorkerInput {
   streamName: string
 }
 
-const STDERR_LIMIT = 4_096
+// Keep enough private context to distinguish a remote/proxy close from an encoder
+// failure. This field never crosses the control-plane API boundary.
+const STDERR_LIMIT = 16_384
 const START_PROGRESS_TIMEOUT_MS = 20_000
 const STOP_GRACE_MS = 10_000
 const requireFromWorker = createRequire(process.cwd() + '/package.json')
@@ -112,6 +114,23 @@ export function buildYouTubeVideoArgs(encoder = resolveFfmpegVideoEncoder()): st
     '-b:v', '4000k', '-minrate', '4000k', '-maxrate', '4000k', '-bufsize', '8000k',
     '-g', '48', '-keyint_min', '48', '-force_key_frames', 'expr:gte(t,n_forced*2)',
     ...(isX264 ? ['-x264-params', 'nal-hrd=cbr:force-cfr=1'] : []),
+  ]
+}
+
+/**
+ * Builds the output-side options for a continuous YouTube RTMPS publish. FIFO
+ * isolates encoding from a brief proxy-side disconnect and retries the exact
+ * server-held target without asking the browser to re-submit any secret.
+ */
+export function buildYouTubeOutputArgs(target: string, httpProxy: string | null): string[] {
+  return [
+    '-rtmp_live', 'live', '-tcp_nodelay', '1',
+    ...(httpProxy ? ['-http_proxy', httpProxy] : []),
+    '-f', 'fifo', '-fifo_format', 'flv',
+    '-attempt_recovery', '1', '-recover_any_error', '1',
+    '-max_recovery_attempts', '12', '-recovery_wait_time', '2',
+    '-restart_with_keyframe', '1', '-queue_size', '240',
+    target,
   ]
 }
 
@@ -224,14 +243,13 @@ export class FfmpegWorker {
       socksBridge = socks5 ? await FfmpegSocks5Bridge.start(socks5) : null
       const httpProxy = socksBridge?.httpProxyUrl ?? resolveFfmpegHttpProxy()
       const args = [
-        '-hide_banner', '-nostats', '-loglevel', 'warning', '-progress', 'pipe:3',
+        '-hide_banner', '-nostats', '-loglevel', 'info', '-progress', 'pipe:3',
         '-stream_loop', '-1', '-re', '-i', input.videoPath,
         ...audioInput,
         '-map', '0:v:0', '-map', '1:a:0', '-map_metadata', '-1',
         ...buildYouTubeVideoArgs(videoEncoder),
         '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
-        ...(httpProxy ? ['-http_proxy', httpProxy] : []),
-        '-f', 'flv', target,
+        ...buildYouTubeOutputArgs(target, httpProxy),
       ]
       const child = spawn(binary, args, { shell: false, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe', 'pipe'] })
       return new FfmpegWorker(child, playlist, socksBridge, events, [input.streamName, input.ingestionAddress, target])
