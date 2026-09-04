@@ -26,6 +26,20 @@ interface AudioFormat {
   channels: number
 }
 
+/**
+ * Parses FFmpeg's input-stream description while accepting codec detail in
+ * parentheses (for example, FFmpeg 8 reports `mp3 (mp3float)`).
+ */
+export function parseMp3Format(ffmpegOutput: string): AudioFormat | null {
+  const match = /Audio:\s*mp3(?:\s*\([^)]*\))?\s*,\s*(\d+)\s*Hz,\s*(mono|stereo|\d+\s+channels)/i.exec(ffmpegOutput)
+  const sampleRate = Number(match?.[1])
+  const channelLabel = match?.[2]?.toLowerCase()
+  const channels = channelLabel === 'mono' ? 1 : channelLabel === 'stereo' ? 2 : Number(channelLabel?.match(/\d+/)?.[0])
+  return Number.isInteger(sampleRate) && Number.isInteger(channels) && channels > 0
+    ? { sampleRate, channels }
+    : null
+}
+
 /** Returns configured root directories, using semicolon because Windows paths contain colons. */
 function configuredRoots(): string[] {
   return (process.env.LIVEPILOT_MEDIA_ROOTS ?? '')
@@ -113,12 +127,9 @@ async function probeMp3(path: string): Promise<AudioFormat> {
     throw new LivePilotError('MEDIA_INVALID', '音乐文件无法通过 MP3 预检。', { cause: error, retryable: false })
   })
   try {
-    const match = /Audio:\s*mp3,\s*(\d+)\s*Hz,\s*(mono|stereo|\d+\s+channels)/i.exec(output)
-    const sampleRate = Number(match?.[1])
-    const channelLabel = match?.[2]?.toLowerCase()
-    const channels = channelLabel === 'mono' ? 1 : channelLabel === 'stereo' ? 2 : Number(channelLabel?.match(/\d+/)?.[0])
-    if (!Number.isInteger(sampleRate) || !Number.isInteger(channels) || channels <= 0) throw new Error('invalid mp3')
-    return { sampleRate, channels }
+    const format = parseMp3Format(output)
+    if (!format) throw new Error('invalid mp3')
+    return format
   } catch (error) {
     throw new LivePilotError('MEDIA_INVALID', '音乐文件不是受支持的 MP3 音频。', { cause: error, retryable: false })
   }
