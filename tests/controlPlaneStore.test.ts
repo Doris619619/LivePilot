@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { resetRuntimeConfigForTests } from '@/server/config'
-import { createJob, createRun, requireJob, updateRun, upsertAuthorizedChannel } from '@/server/controlPlaneStore'
+import { createJob, createRun, requireJob, requireRun, updateRun, upsertAuthorizedChannel } from '@/server/controlPlaneStore'
 import { createRunSafetyState } from '@/server/runSafetyState'
 
 const ENVIRONMENT = {
@@ -84,5 +84,8 @@ describe('controlPlaneStore', () => {
     await expect(safety.read()).resolves.toMatchObject({
       riskBroadcastId: 'broadcast-ready', guardedChannelId: 'youtube-channel-risk',
     })
+    await safety.clear('broadcast-ready')
+    await expect(safety.read()).resolves.toBeNull()
+    await expect(requireRun(run.id)).resolves.toMatchObject({ phase: 'failed', youtubeLifecycle: 'complete' })
   })
 })

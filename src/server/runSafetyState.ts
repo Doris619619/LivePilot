@@ -25,9 +25,14 @@ export function createRunSafetyState(channelId: string, youtubeChannelId: string
     },
     /** Clears a resolved risk by recording only the authoritative lifecycle, not deleting Run history. */
     async clear(broadcastId?: string) {
+      if (!broadcastId) return
       const records = await listControlPlaneRecords()
-      const resolved = records.runs.find((item) => item.channelId === channelId && item.broadcastId === (broadcastId ?? item.broadcastId))
-      if (resolved) await updateRun(resolved.id, { youtubeLifecycle: 'complete' })
+      const resolved = records.runs.find((item) => item.channelId === channelId && item.broadcastId === broadcastId)
+      if (!resolved) return
+      await updateRun(resolved.id, {
+        youtubeLifecycle: 'complete',
+        ...(resolved.phase === 'transitioning_live' ? { phase: 'failed', endedAt: new Date().toISOString() } : {}),
+      })
     },
     /** Reconciles remote active Broadcast observation into the currently executing Run. */
     async reconcile(_youtubeChannelId: string, activeBroadcastIds: string[]) {
