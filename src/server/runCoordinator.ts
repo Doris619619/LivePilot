@@ -53,7 +53,7 @@ export class RunCoordinator {
       const api = createChannelYouTubeApi(channel.connectionId)
       const service = new LiveService(api, {
         lock: async (_operation, action) => action(),
-        safety: createRunSafetyState(channel.id, run.id),
+        safety: createRunSafetyState(channel.id, channel.youtubeChannelId, run.id),
         preferredStreamId: channel.reusableStreamId,
         onBroadcastCreated: async (broadcast) => {
           await updateRun(run.id, {
@@ -113,7 +113,7 @@ export class RunCoordinator {
       const api = createChannelYouTubeApi(channel.connectionId)
       const service = new LiveService(api, {
         lock: async (_operation, action) => action(),
-        safety: createRunSafetyState(channel.id, runId),
+        safety: createRunSafetyState(channel.id, channel.youtubeChannelId, runId),
       })
       try {
         const snapshot = await service.stopBroadcast(current.broadcastId)

@@ -4,7 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { resetRuntimeConfigForTests } from '@/server/config'
-import { createJob, createRun, requireJob, upsertAuthorizedChannel } from '@/server/controlPlaneStore'
+import { createJob, createRun, requireJob, updateRun, upsertAuthorizedChannel } from '@/server/controlPlaneStore'
+import { createRunSafetyState } from '@/server/runSafetyState'
 
 const ENVIRONMENT = {
   YOUTUBE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
@@ -65,5 +66,23 @@ describe('controlPlaneStore', () => {
     await createRun(first)
 
     await expect(createRun(second)).rejects.toMatchObject({ code: 'RUN_ALREADY_ACTIVE' })
+  })
+
+  /** Ensures failed preparation in a ready state does not impersonate an unresolved live risk. */
+  it('scopes unresolved Run risk to the real YouTube Channel ID', async () => {
+    const authorized = await upsertAuthorizedChannel({ id: 'youtube-channel-risk', title: 'Risk Channel' })
+    const job = await createJob({
+      channelId: authorized.channel.id, name: 'Risk test', videoAssetId: 'video-risk-1234567890',
+      audioAssetIds: ['audio-risk-1234567890'], loopVideo: true, loopAudio: true,
+    })
+    const run = await createRun(job)
+    const safety = createRunSafetyState(authorized.channel.id, authorized.channel.youtubeChannelId, run.id)
+    await updateRun(run.id, { broadcastId: 'broadcast-ready', phase: 'failed', youtubeLifecycle: 'created' })
+    await expect(safety.read()).resolves.toBeNull()
+
+    await updateRun(run.id, { phase: 'transitioning_live', youtubeLifecycle: 'liveStarting' })
+    await expect(safety.read()).resolves.toMatchObject({
+      riskBroadcastId: 'broadcast-ready', guardedChannelId: 'youtube-channel-risk',
+    })
   })
 })
