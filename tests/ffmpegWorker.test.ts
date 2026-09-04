@@ -1,6 +1,6 @@
 /** Validates FFmpeg structured progress parsing without spawning a real media process. */
 import { afterEach, describe, expect, it } from 'vitest'
-import { parseFfmpegProgress, resolveFfmpegHttpProxy } from '@/server/ffmpegWorker'
+import { FfmpegProgressDecoder, parseFfmpegProgress, resolveFfmpegHttpProxy } from '@/server/ffmpegWorker'
 
 /** Covers the worker heartbeat contract used to distinguish pushing from process liveness. */
 describe('parseFfmpegProgress', () => {
@@ -14,6 +14,25 @@ describe('parseFfmpegProgress', () => {
   /** Rejects incomplete arbitrary key-value output so stderr cannot masquerade as pushing telemetry. */
   it('rejects records without the FFmpeg progress marker', () => {
     expect(parseFfmpegProgress(['frame=9', 'out_time_us=1000000'])).toBeNull()
+  })
+
+  /** FFmpeg separates records with a progress line, not necessarily an empty line. */
+  it('decodes adjacent and chunk-split progress records', () => {
+    const decoder = new FfmpegProgressDecoder()
+    expect(decoder.push('frame=42\nfps=29.97\nout_time_us=2400000\npro')).toEqual([])
+    expect(decoder.push('gress=continue\nframe=84\nfps=30\nout_time_us=4800000\nprogress=continue\n')).toEqual([
+      { frame: 42, fps: 29.97, bitrate: null, speed: null, outTimeMs: 2400 },
+      { frame: 84, fps: 30, bitrate: null, speed: null, outTimeMs: 4800 },
+    ])
+  })
+
+  /** A final progress=end marker may arrive without a trailing line ending. */
+  it('flushes an unterminated final record on close', () => {
+    const decoder = new FfmpegProgressDecoder()
+    expect(decoder.push('frame=9\nout_time_us=1000000\nprogress=end')).toEqual([])
+    expect(decoder.finish()).toEqual([
+      { frame: 9, fps: null, bitrate: null, speed: null, outTimeMs: 1000 },
+    ])
   })
 })
 

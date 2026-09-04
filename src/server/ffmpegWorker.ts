@@ -116,6 +116,43 @@ export function parseFfmpegProgress(lines: string[]): Partial<WorkerProgress> | 
   }
 }
 
+/**
+ * Decodes FFmpeg's newline-delimited progress protocol. A record ends at its
+ * `progress=...` field; FFmpeg does not promise a blank line between records.
+ */
+export class FfmpegProgressDecoder {
+  private incomplete = ''
+  private record: string[] = []
+
+  /** Accepts an arbitrary pipe chunk and returns each complete progress record. */
+  push(chunk: string): Array<Partial<WorkerProgress>> {
+    const lines = (this.incomplete + chunk).split(/\r?\n/)
+    this.incomplete = lines.pop() ?? ''
+    return this.consume(lines)
+  }
+
+  /** Flushes the final unterminated line when the child closes its progress pipe. */
+  finish(): Array<Partial<WorkerProgress>> {
+    const tail = this.incomplete ? [this.incomplete] : []
+    this.incomplete = ''
+    return this.consume(tail)
+  }
+
+  /** Builds records only at the protocol's explicit progress marker. */
+  private consume(lines: string[]): Array<Partial<WorkerProgress>> {
+    const completed: Array<Partial<WorkerProgress>> = []
+    for (const line of lines) {
+      if (!line) continue
+      this.record.push(line)
+      if (!line.startsWith('progress=')) continue
+      const parsed = parseFfmpegProgress(this.record)
+      this.record = []
+      if (parsed) completed.push(parsed)
+    }
+    return completed
+  }
+}
+
 /** Converts a finite non-negative progress value to a number and otherwise reports null. */
 function numeric(value: string | undefined): number | null {
   const parsed = Number(value)
@@ -206,14 +243,11 @@ export class FfmpegWorker {
 
   /** Binds progress, stderr, spawn errors, and exit handling to the Run's event callbacks. */
   private observe(): void {
-    let progressBuffer = ''
+    const progressDecoder = new FfmpegProgressDecoder()
     const progressFd = this.child.stdio[3]
     if (progressFd && 'on' in progressFd) {
       progressFd.on('data', (chunk: Buffer) => {
-        progressBuffer += chunk.toString('utf8')
-        const records = progressBuffer.split(/\r?\n\r?\n/)
-        progressBuffer = records.pop() ?? ''
-        for (const record of records) this.acceptProgress(record.split(/\r?\n/))
+        for (const progress of progressDecoder.push(chunk.toString('utf8'))) this.acceptProgress(progress)
       })
     }
     this.child.stderr?.on('data', (chunk: Buffer) => {
@@ -224,6 +258,7 @@ export class FfmpegWorker {
     })
     this.child.once('close', (code, signal) => {
       this.exited = true
+      for (const progress of progressDecoder.finish()) this.acceptProgress(progress)
       void deletePlaylist(this.playlistPath)
       if (!this.expectedStop && (this.progress.outTimeMs ?? 0) === 0) {
         this.pushingReject?.(new LivePilotError('WORKER_CRASHED', 'FFmpeg 在开始推流前退出。'))
@@ -233,9 +268,7 @@ export class FfmpegWorker {
   }
 
   /** Accepts only records that advance output time, making pushing a real-media signal. */
-  private acceptProgress(lines: string[]): void {
-    const parsed = parseFfmpegProgress(lines)
-    if (!parsed) return
+  private acceptProgress(parsed: Partial<WorkerProgress>): void {
     const nextOutTime = parsed.outTimeMs ?? this.progress.outTimeMs
     const advanced = nextOutTime !== null && nextOutTime > (this.progress.outTimeMs ?? -1)
     this.progress = { ...this.progress, ...parsed, outTimeMs: nextOutTime, heartbeatAt: new Date().toISOString() }

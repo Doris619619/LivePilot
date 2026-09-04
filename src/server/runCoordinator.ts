@@ -93,6 +93,9 @@ export class RunCoordinator {
         const current = await requireRun(run.id)
         // A transition error may be ambiguous; retain a pushing worker and the Run for explicit Stop/reconciliation.
         if (current.phase !== 'transitioning_live') {
+          const worker = workerRegistry().get(run.id)
+          if (worker && !worker.hasExited) await worker.stop().catch(() => undefined)
+          workerRegistry().delete(run.id)
           await updateRun(run.id, { phase: 'failed', error: publicError, endedAt: new Date().toISOString() })
         } else {
           await updateRun(run.id, { phase: 'failed', error: publicError })
