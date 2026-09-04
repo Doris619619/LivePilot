@@ -1,6 +1,6 @@
 /** Validates FFmpeg structured progress parsing without spawning a real media process. */
 import { afterEach, describe, expect, it } from 'vitest'
-import { FfmpegProgressDecoder, parseFfmpegProgress, resolveFfmpegHttpProxy } from '@/server/ffmpegWorker'
+import { buildYouTubeVideoArgs, FfmpegProgressDecoder, parseFfmpegProgress, resolveFfmpegHttpProxy, resolveFfmpegVideoEncoder } from '@/server/ffmpegWorker'
 
 /** Covers the worker heartbeat contract used to distinguish pushing from process liveness. */
 describe('parseFfmpegProgress', () => {
@@ -56,5 +56,36 @@ describe('resolveFfmpegHttpProxy', () => {
   it('rejects non-local proxy endpoints', () => {
     process.env.LIVEPILOT_FFMPEG_HTTP_PROXY = 'http://proxy.example.test:7890'
     expect(() => resolveFfmpegHttpProxy()).toThrow(/loopback HTTP/)
+  })
+})
+
+/** Keeps video encoding deterministic and safe across portable and hardware-backed Windows installs. */
+describe('YouTube video encoding', () => {
+  const original = process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER
+
+  /** Restores the inherited encoder selection after every assertion. */
+  afterEach(() => {
+    if (original === undefined) delete process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER
+    else process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER = original
+  })
+
+  /** Uses the portable encoder by default but retains CBR and forced two-second keyframes. */
+  it('builds the portable YouTube CBR profile by default', () => {
+    delete process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER
+    expect(resolveFfmpegVideoEncoder()).toBe('libx264')
+    expect(buildYouTubeVideoArgs()).toEqual(expect.arrayContaining([
+      '-b:v', '4000k', '-minrate', '4000k', '-maxrate', '4000k',
+      '-g', '48', '-force_key_frames', 'expr:gte(t,n_forced*2)',
+      '-x264-params', 'nal-hrd=cbr:force-cfr=1',
+    ]))
+  })
+
+  /** Allows a named server-side QSV encoder while rejecting arbitrary spawned encoder values. */
+  it('allows QSV and rejects unallowlisted encoder values', () => {
+    process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER = 'h264_qsv'
+    expect(resolveFfmpegVideoEncoder()).toBe('h264_qsv')
+    expect(buildYouTubeVideoArgs()).toEqual(expect.arrayContaining(['-c:v', 'h264_qsv', '-pix_fmt', 'nv12']))
+    process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER = 'anything-from-a-browser'
+    expect(() => resolveFfmpegVideoEncoder()).toThrow(/受支持/)
   })
 })

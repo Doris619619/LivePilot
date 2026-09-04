@@ -44,6 +44,7 @@ const STDERR_LIMIT = 4_096
 const START_PROGRESS_TIMEOUT_MS = 20_000
 const STOP_GRACE_MS = 10_000
 const requireFromWorker = createRequire(process.cwd() + '/package.json')
+const VIDEO_ENCODERS = new Set(['libx264', 'h264_qsv', 'h264_nvenc', 'h264_amf', 'h264_mf'])
 
 /** Removes known server-only ingest material before diagnostics are retained in a Run. */
 function redact(value: string, secrets: string[]): string {
@@ -84,6 +85,33 @@ export function resolveFfmpegHttpProxy(): string | null {
     throw new LivePilotError('FFMPEG_UNAVAILABLE', 'LIVEPILOT_FFMPEG_HTTP_PROXY 仅允许无凭据的 loopback HTTP 代理。', { retryable: false })
   }
   return url.origin
+}
+
+/**
+ * Chooses an allowlisted H.264 encoder from trusted server configuration only.
+ * `libx264` remains portable by default; installations can opt into a verified
+ * Windows hardware encoder without giving the browser control of process args.
+ */
+export function resolveFfmpegVideoEncoder(): string {
+  const configured = process.env.LIVEPILOT_FFMPEG_VIDEO_ENCODER?.trim() || 'libx264'
+  if (!VIDEO_ENCODERS.has(configured)) {
+    throw new LivePilotError('FFMPEG_UNAVAILABLE', 'LIVEPILOT_FFMPEG_VIDEO_ENCODER 不是受支持的 H.264 编码器。', { retryable: false })
+  }
+  return configured
+}
+
+/** Builds a YouTube-compatible H.264 CBR profile with a keyframe interval no longer than two seconds at 24fps. */
+export function buildYouTubeVideoArgs(encoder = resolveFfmpegVideoEncoder()): string[] {
+  const isX264 = encoder === 'libx264'
+  return [
+    '-c:v', encoder,
+    '-preset', 'veryfast',
+    '-profile:v', 'high',
+    '-pix_fmt', isX264 ? 'yuv420p' : 'nv12',
+    '-b:v', '4000k', '-minrate', '4000k', '-maxrate', '4000k', '-bufsize', '8000k',
+    '-g', '48', '-keyint_min', '48', '-force_key_frames', 'expr:gte(t,n_forced*2)',
+    ...(isX264 ? ['-x264-params', 'nal-hrd=cbr:force-cfr=1'] : []),
+  ]
 }
 
 /** Writes a quoted FFconcat list only for validated local MP3 paths, rejecting an ambiguous apostrophe edge case. */
@@ -184,6 +212,7 @@ export class FfmpegWorker {
   static async start(input: StartWorkerInput, events: WorkerEvents): Promise<FfmpegWorker> {
     const binary = await resolveFfmpegPath()
     const httpProxy = resolveFfmpegHttpProxy()
+    const videoEncoder = resolveFfmpegVideoEncoder()
     const playlist = await writePlaylist(input.runId, input.audioPaths)
     const audioInput = playlist ? ['-stream_loop', '-1', '-re', '-f', 'concat', '-safe', '0', '-i', playlist] : ['-stream_loop', '-1', '-re', '-i', input.audioPaths[0]]
     const target = input.ingestionAddress.replace(/\/$/, '') + '/' + input.streamName
@@ -192,8 +221,8 @@ export class FfmpegWorker {
       '-stream_loop', '-1', '-re', '-i', input.videoPath,
       ...audioInput,
       '-map', '0:v:0', '-map', '1:a:0', '-map_metadata', '-1',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
+      ...buildYouTubeVideoArgs(videoEncoder),
+      '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
       ...(httpProxy ? ['-http_proxy', httpProxy] : []),
       '-f', 'flv', target,
     ]

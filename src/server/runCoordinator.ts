@@ -149,16 +149,29 @@ export class RunCoordinator {
   private async waitForIngest(runId: string, api: ReturnType<typeof createChannelYouTubeApi>, streamId: string): Promise<void> {
     let lastStatus: string | null = null
     for (let attempt = 0; attempt < INGEST_MAX_ATTEMPTS; attempt += 1) {
+      await this.throwIfWorkerExited(runId)
       const status = await api.getStreamStatus(streamId)
       lastStatus = status.streamStatus
       await updateRun(runId, { ingestStatus: lastStatus })
       if (status.streamStatus === 'active') return
       if (attempt + 1 < INGEST_MAX_ATTEMPTS) await sleep(INGEST_POLL_MS)
     }
+    await this.throwIfWorkerExited(runId)
     const worker = workerRegistry().get(runId)
     if (worker) await worker.stop().catch(() => undefined)
     await updateRun(runId, { workerPhase: 'stopped', phase: 'failed', ingestStatus: lastStatus, error: { code: 'INGEST_TIMEOUT', message: 'YouTube 未在限定时间内确认 ingest active。', action: '检查网络、频道权限和 FFmpeg 本机状态后重试。', retryable: true }, endedAt: new Date().toISOString() })
     throw new LivePilotError('INGEST_TIMEOUT', 'YouTube ingest 未在限定时间内进入 active。')
+  }
+
+  /** Preserves a real worker crash instead of later overwriting it as a generic ingest timeout. */
+  private async throwIfWorkerExited(runId: string): Promise<void> {
+    const run = await requireRun(runId)
+    if (run.workerPhase !== 'crashed' && run.exitCode === null) return
+    throw new LivePilotError(
+      'WORKER_CRASHED',
+      'FFmpeg 在 YouTube 确认 ingest 前退出。',
+      { action: 'FFmpeg 已在 ingest 确认前停止；查看本机网络和媒体编码状态后重试。' },
+    )
   }
 
   /** Persists worker callbacks without exposing the process handle or unredacted stderr to routes. */
