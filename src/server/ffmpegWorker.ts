@@ -8,6 +8,7 @@ import 'server-only'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { access } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
+import { createRequire } from 'node:module'
 import { dataPath, deletePrivateFile, writePrivateFile } from './storage'
 import { LivePilotError } from './errors'
 
@@ -42,6 +43,7 @@ export interface StartWorkerInput {
 const STDERR_LIMIT = 4_096
 const START_PROGRESS_TIMEOUT_MS = 20_000
 const STOP_GRACE_MS = 10_000
+const requireFromWorker = createRequire(process.cwd() + '/package.json')
 
 /** Removes known server-only ingest material before diagnostics are retained in a Run. */
 function redact(value: string, secrets: string[]): string {
@@ -56,8 +58,7 @@ export async function resolveFfmpegPath(): Promise<string> {
     await access(configured).catch((error) => { throw new LivePilotError('FFMPEG_UNAVAILABLE', '配置的 FFmpeg 文件不存在或不可访问。', { cause: error, retryable: false }) })
     return configured
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const bundled = require('ffmpeg-static') as string | null
+  const bundled = requireFromWorker('ffmpeg-static') as string | null
   if (!bundled) throw new LivePilotError('FFMPEG_UNAVAILABLE', 'ffmpeg-static 未提供当前 Windows 平台二进制。', { retryable: false })
   await access(bundled).catch((error) => { throw new LivePilotError('FFMPEG_UNAVAILABLE', '随应用提供的 FFmpeg 不可访问。', { cause: error, retryable: false }) })
   return bundled
