@@ -77,6 +77,8 @@ export interface LiveServiceOptions {
   }
   /** Exact Channel-owned reusable Stream reference, never a browser-provided value. */
   preferredStreamId?: string | null
+  /** Persists a newly created Broadcast before subsequent binding can partially fail. */
+  onBroadcastCreated?: (broadcast: LiveBroadcast) => Promise<void>
 }
 
 interface Inventory {
@@ -88,7 +90,7 @@ interface Inventory {
 /** Coordinates safe single-account Broadcast selection, binding, and transitions. */
 export class LiveService {
   private readonly api: LiveServiceApi
-  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock' | 'safety' | 'preferredStreamId'>>
+  private readonly options: Required<Omit<LiveServiceOptions, 'sleep' | 'now' | 'lock' | 'safety' | 'preferredStreamId' | 'onBroadcastCreated'>>
   /** Wait implementation used by bounded lifecycle polling and retries. */
   private readonly sleepFn: (milliseconds: number) => Promise<void>
   /** Server clock used only when constructing a new test Broadcast schedule. */
@@ -99,6 +101,8 @@ export class LiveService {
   private readonly safety: Required<NonNullable<LiveServiceOptions['safety']>>
   /** Keeps repeated Runs on the exact durable Channel Stream when it is still valid. */
   private readonly preferredStreamId: string | null
+  /** Lets the Run audit record survive later Stream preparation failures. */
+  private readonly onBroadcastCreated: ((broadcast: LiveBroadcast) => Promise<void>) | null
 
   /**
    * Creates a lifecycle service around the server-only YouTube adapter.
@@ -132,6 +136,7 @@ export class LiveService {
       reconcile: reconcileBroadcastRisk,
     }
     this.preferredStreamId = options.preferredStreamId ?? null
+    this.onBroadcastCreated = options.onBroadcastCreated ?? null
   }
 
   /**
@@ -195,6 +200,7 @@ export class LiveService {
           scheduledStartTime: scheduled.toISOString(),
           privacyStatus: 'unlisted',
         })
+        await this.onBroadcastCreated?.(created)
         await this.prepareInternal(created.id)
         return this.snapshot(created.id)
       },

@@ -55,6 +55,13 @@ export class RunCoordinator {
         lock: async (_operation, action) => action(),
         safety: createRunSafetyState(channel.id, run.id),
         preferredStreamId: channel.reusableStreamId,
+        onBroadcastCreated: async (broadcast) => {
+          await updateRun(run.id, {
+            broadcastId: broadcast.id,
+            phase: 'preparing',
+            youtubeLifecycle: broadcast.status.lifeCycleStatus,
+          })
+        },
       })
       try {
         const prepared = await service.createTestBroadcast()

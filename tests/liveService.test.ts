@@ -221,6 +221,25 @@ describe('LiveService', () => {
     expect(discover).not.toHaveBeenCalled()
   })
 
+  /** Persists a created Broadcast ID before a later Stream preparation failure can occur. */
+  it('reports a created Broadcast before Stream preparation', async () => {
+    const created = broadcast('created-broadcast')
+    const seen: string[] = []
+    const api = makeApi({
+      listLiveBroadcasts: vi.fn(async () => []),
+      createBroadcast: vi.fn(async () => created),
+      getBroadcastById: vi.fn(async () => created),
+      getOrCreateLiveStream: vi.fn(async () => { throw new Error('stream preparation failed') }),
+    })
+    const subject = new LiveService(api, {
+      lock: async (_operation, action) => action(),
+      onBroadcastCreated: async (item) => { seen.push(item.id) },
+    })
+
+    await expect(subject.createTestBroadcast()).rejects.toThrow('stream preparation failed')
+    expect(seen).toEqual(['created-broadcast'])
+  })
+
   /** 验证其他活动 Broadcast 会阻止新建和切换，避免控制错误直播。 */
   it('blocks create and switching when another broadcast is active', async () => {
     const create = vi.fn(async () => broadcast('new-one'))
