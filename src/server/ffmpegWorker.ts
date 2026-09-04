@@ -64,6 +64,28 @@ export async function resolveFfmpegPath(): Promise<string> {
   return bundled
 }
 
+/**
+ * Accepts only a credential-free loopback HTTP CONNECT proxy for RTMPS egress.
+ * A browser or remote caller can never choose this endpoint, and non-loopback
+ * proxy targets are rejected to avoid silently exporting a Stream Key elsewhere.
+ */
+export function resolveFfmpegHttpProxy(): string | null {
+  const configured = process.env.LIVEPILOT_FFMPEG_HTTP_PROXY?.trim()
+  if (!configured) return null
+  let url: URL
+  try {
+    url = new URL(configured)
+  } catch (error) {
+    throw new LivePilotError('FFMPEG_UNAVAILABLE', 'LIVEPILOT_FFMPEG_HTTP_PROXY 必须是本机 HTTP 代理地址。', { cause: error, retryable: false })
+  }
+  const isLoopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+  if (url.protocol !== 'http:' || !isLoopback || url.username || url.password
+    || (url.pathname !== '/' && url.pathname !== '') || url.search || url.hash || !url.port) {
+    throw new LivePilotError('FFMPEG_UNAVAILABLE', 'LIVEPILOT_FFMPEG_HTTP_PROXY 仅允许无凭据的 loopback HTTP 代理。', { retryable: false })
+  }
+  return url.origin
+}
+
 /** Writes a quoted FFconcat list only for validated local MP3 paths, rejecting an ambiguous apostrophe edge case. */
 async function writePlaylist(runId: string, audioPaths: string[]): Promise<string | null> {
   if (audioPaths.length <= 1) return null
@@ -124,6 +146,7 @@ export class FfmpegWorker {
   /** Starts a real-time looping FFmpeg process and returns an opaque worker controller. */
   static async start(input: StartWorkerInput, events: WorkerEvents): Promise<FfmpegWorker> {
     const binary = await resolveFfmpegPath()
+    const httpProxy = resolveFfmpegHttpProxy()
     const playlist = await writePlaylist(input.runId, input.audioPaths)
     const audioInput = playlist ? ['-stream_loop', '-1', '-re', '-f', 'concat', '-safe', '0', '-i', playlist] : ['-stream_loop', '-1', '-re', '-i', input.audioPaths[0]]
     const target = input.ingestionAddress.replace(/\/$/, '') + '/' + input.streamName
@@ -133,7 +156,9 @@ export class FfmpegWorker {
       ...audioInput,
       '-map', '0:v:0', '-map', '1:a:0', '-map_metadata', '-1',
       '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-f', 'flv', target,
+      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
+      ...(httpProxy ? ['-http_proxy', httpProxy] : []),
+      '-f', 'flv', target,
     ]
     try {
       const child = spawn(binary, args, { shell: false, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe', 'pipe'] })

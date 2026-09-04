@@ -79,6 +79,8 @@ YouTube 首次启用直播可能存在平台等待期。应用无法替代 Googl
    LIVEPILOT_MEDIA_ROOTS=D:\LiveMedia;E:\Archive\LiveMedia
    # 可选：使用已审计的 ffmpeg.exe，而不是随依赖安装的版本
    # LIVEPILOT_FFMPEG_PATH=D:\Tools\ffmpeg\bin\ffmpeg.exe
+   # 可选：仅让 FFmpeg 的 RTMPS 连接经由本机 HTTP CONNECT 代理（例如 Clash mixed-port）
+   # LIVEPILOT_FFMPEG_HTTP_PROXY=http://127.0.0.1:7890
    ~~~
 
 可用 PowerShell 生成本地应用密钥；只把输出写进 `.env.local`：
