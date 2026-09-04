@@ -103,9 +103,16 @@ export function ControlPlaneConsole() {
 
   if (!snapshot) return <main className="app-shell loading-shell"><p>正在读取 LivePilot 控制台…</p></main>
 
+  const operationMessage = busy === 'start'
+    ? '正在准备 Broadcast、FFmpeg Worker 和 YouTube ingest；请勿重复点击。'
+    : busy === 'stop'
+      ? '正在确认 YouTube complete，随后停止对应 FFmpeg Worker。'
+      : busy ? '正在执行服务器操作…' : null
+
   return (
     <main className="app-shell">
       <header className="topbar"><div className="brand"><div><h1>LivePilot</h1><p>Channel · Job · Run · FFmpeg</p></div></div><button className="button ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>刷新</button></header>
+      {operationMessage && <section className="notice"><strong>{operationMessage}</strong></section>}
       {error && <section className="notice error-notice" role="alert"><div className="error-code">{error.code}</div><div><strong>{error.message}</strong><p>{error.action}</p></div></section>}
       {!snapshot.configured && <section className="notice warning"><strong>需要配置 Google OAuth 与 LIVEPILOT_APP_SECRET。</strong></section>}
       <section className="panel">
@@ -125,7 +132,7 @@ export function ControlPlaneConsole() {
           {snapshot.jobs.length === 0 ? <p className="field-help">先创建一个 Live Job。</p> : snapshot.jobs.map((job) => {
             const active = snapshot.runs.find((run) => run.channelId === job.channelId && occupiesChannel(run))
             const run = snapshot.runs.find((item) => item.jobId === job.id && occupiesChannel(item))
-            return <div className="selected-details" key={job.id}><strong>{job.name}</strong><p>视频与 {job.audioAssetIds.length} 首 MP3 循环</p>{run ? <button className="button end-live" disabled={Boolean(busy)} onClick={() => void mutate('stop', '/api/runs/stop', { runId: run.id })}>结束 Run · {run.phase}</button> : <button className="button go-live" disabled={Boolean(busy || active)} onClick={() => void mutate('start', '/api/runs/start', { jobId: job.id })}>{active ? '该 Channel 已有活动 Run' : '开始直播'}</button>}</div>
+            return <div className="selected-details" key={job.id}><strong>{job.name}</strong><p>视频与 {job.audioAssetIds.length} 首 MP3 循环</p>{run ? <button className="button end-live" disabled={Boolean(busy)} onClick={() => void mutate('stop', '/api/runs/stop', { runId: run.id })}>{busy === 'stop' ? '正在结束直播…' : `结束 Run · ${run.phase}`}</button> : <button className="button go-live" disabled={Boolean(busy || active)} onClick={() => void mutate('start', '/api/runs/start', { jobId: job.id })}>{busy === 'start' ? '正在准备直播…' : active ? '该 Channel 已有活动 Run' : '开始直播'}</button>}</div>
           })}
         </section>
       </section>
